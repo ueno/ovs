@@ -53,10 +53,13 @@ struct fat_rwlock_slot {
      *
      *     - UINT_MAX: This thread has the write-lock on 'rwlock' and holds
      *       'mutex' (plus the 'mutex' of all of 'rwlock''s other slots).
+     *       'upgrade_depth' means the depth of read-lock on which it was
+     *       upgraded to write-lock.
      *
      * Accessed only by the slot's own thread, so no synchronization is
      * needed. */
     unsigned int depth;
+    unsigned int upgrade_depth;
 };
 
 static void
@@ -127,6 +130,7 @@ fat_rwlock_get_slot__(struct fat_rwlock *rwlock)
     slot->rwlock = rwlock;
     ovs_mutex_init(&slot->mutex);
     slot->depth = 0;
+    slot->upgrade_depth = 0;
 
     ovs_mutex_lock(&rwlock->mutex);
     ovs_list_push_back(&rwlock->threads, &slot->list_node);
@@ -236,6 +240,7 @@ fat_rwlock_wrlock(const struct fat_rwlock *rwlock_)
 
     ovs_assert(!this->depth);
     this->depth = UINT_MAX;
+    this->upgrade_depth = 1;
 
     ovs_mutex_lock(&rwlock->mutex);
     LIST_FOR_EACH (slot, list_node, &rwlock->threads) {
@@ -257,11 +262,13 @@ fat_rwlock_unlock(const struct fat_rwlock *rwlock_)
 
     switch (this->depth) {
     case UINT_MAX:
+        this->depth = this->upgrade_depth - 1;
         LIST_FOR_EACH (slot, list_node, &rwlock->threads) {
-            ovs_mutex_unlock(&slot->mutex);
+            if (slot != this || this->depth == 0) {
+                ovs_mutex_unlock(&slot->mutex);
+            }
         }
         ovs_mutex_unlock(&rwlock->mutex);
-        this->depth = 0;
         break;
 
     case 0:
@@ -275,4 +282,49 @@ fat_rwlock_unlock(const struct fat_rwlock *rwlock_)
         this->depth--;
         break;
     }
+}
+
+/* Upgrades last taken read-lock to write-lock.
+ * Not thread-safe with 'fat_rwlock_wrlock' and concurrent upgrades. */
+void
+fat_rwlock_upgrade(const struct fat_rwlock *rwlock_)
+    OVS_NO_THREAD_SAFETY_ANALYSIS
+{
+    struct fat_rwlock *rwlock = CONST_CAST(struct fat_rwlock *, rwlock_);
+    struct fat_rwlock_slot *this = fat_rwlock_get_slot__(rwlock);
+    struct fat_rwlock_slot *slot;
+
+    ovs_assert(this->depth && this->depth != UINT_MAX);
+
+    this->upgrade_depth = this->depth;
+    this->depth = UINT_MAX;
+
+    ovs_mutex_lock(&rwlock->mutex);
+    LIST_FOR_EACH (slot, list_node, &rwlock->threads) {
+        if (slot != this) {
+            ovs_mutex_lock(&slot->mutex);
+        }
+    }
+}
+
+/* Downgrades write-lock to read-lock. */
+void
+fat_rwlock_downgrade(const struct fat_rwlock *rwlock_)
+    OVS_NO_THREAD_SAFETY_ANALYSIS
+{
+    struct fat_rwlock *rwlock = CONST_CAST(struct fat_rwlock *, rwlock_);
+    struct fat_rwlock_slot *this = fat_rwlock_get_slot__(rwlock);
+    struct fat_rwlock_slot *slot;
+
+    ovs_assert(this->depth == UINT_MAX);
+
+    this->depth = this->upgrade_depth;
+    this->upgrade_depth = 0;
+
+    LIST_FOR_EACH (slot, list_node, &rwlock->threads) {
+        if (slot != this) {
+            ovs_mutex_unlock(&slot->mutex);
+        }
+    }
+    ovs_mutex_unlock(&rwlock->mutex);
 }

@@ -46,4 +46,37 @@ int fat_rwlock_tryrdlock(const struct fat_rwlock *rwlock)
 void fat_rwlock_wrlock(const struct fat_rwlock *rwlock) OVS_ACQ_WRLOCK(rwlock);
 void fat_rwlock_unlock(const struct fat_rwlock *rwlock) OVS_RELEASES(rwlock);
 
+/*
+ * Following functions used to upgrade last taken read-lock to write-lock and
+ * downgrade it back to read-lock. Upgrading/downgrading doesn't change depth
+ * of recursive locking.
+ *
+ * Detailed description:
+ * -----------------------------------------------------------------------------
+ *           STATE            | POSSIBLE OPERATION |     RESULTED STATE
+ * -----------------------------------------------------------------------------
+ * unlocked                    fat_rwlock_rdlock    read-locked with depth = 1
+ *                             fat_rwlock_wrlock    write-locked with depth = 1
+ *
+ * read-locked with depth = 1  fat_rwlock_rdlock    read-locked with depth = 2
+ *                             fat_rwlock_unlock    unlocked
+ *                             fat_rwlock_upgrade   write-locked with depth = 1
+ *
+ * read-locked with depth = N  fat_rwlock_rdlock    read-locked with depth = N+1
+ *                             fat_rwlock_unlock    read-locked with depth = N-1
+ *                             fat_rwlock_upgrade   write-locked with depth = N
+ *
+ * write-locked with depth = 1 fat_rwlock_unlock    unlocked
+ *                             fat_rwlock_downgrade read-locked with depth = 1
+ *
+ * write-locked with depth = N fat_rwlock_unlock    read-locked with depth = N-1
+ *                             fat_rwlock_downgrade read-locked with depth = N
+ * -----------------------------------------------------------------------------
+ *
+ * Upgrading is NOT thread-safe operation, so, the caller must be sure that
+ * it is the only thread that wants to acquire write-lock.
+ */
+void fat_rwlock_upgrade(const struct fat_rwlock *rwlock);
+void fat_rwlock_downgrade(const struct fat_rwlock *rwlock);
+
 #endif /* fat-rwlock.h */
