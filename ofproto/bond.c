@@ -1089,49 +1089,72 @@ bond_shift_load(struct bond_entry *hash, struct bond_slave *to)
     bond->bond_revalidate = true;
 }
 
-/* Picks and returns a bond_entry to migrate from 'from' (the most heavily
+/* Picks and returns a 'bond_entry's to migrate from 'from' (the most heavily
  * loaded bond slave) to a bond slave that has 'to_tx_bytes' bytes of load,
  * given that doing so must decrease the ratio of the load on the two slaves by
- * at least 0.1.  Returns NULL if there is no appropriate entry.
+ * at least 0.1.  Returns number of entries filled in 'to_migrate'.
  *
- * The list of entries isn't sorted.  I don't know of a reason to prefer to
- * shift away small hashes or large hashes. */
-static struct bond_entry *
-choose_entry_to_migrate(const struct bond_slave *from, uint64_t to_tx_bytes)
+ * The list of entries is sorted in descending order of load.  This allows us
+ * to collect subset of entries with accumulated load close to ideal.  */
+static size_t
+choose_entries_to_migrate(const struct bond_slave *from, uint64_t to_tx_bytes,
+                          struct bond_entry **to_migrate)
     OVS_REQ_WRLOCK(rwlock)
 {
     struct bond_entry *e;
+    /* Note, the ideal traffic is the mid point between 'from' and 'to'.
+     * This value does not change by rebalancing.  */
+    uint64_t ideal_tx_bytes = (from->tx_bytes + to_tx_bytes) / 2;
+    uint64_t ideal_delta = ideal_tx_bytes - to_tx_bytes;
+    uint64_t delta = 0;         /* The amount to rebalance. */
+    uint64_t new_low;           /* The lower bandwidth between 'to' and 'from'
+                                 * after rebalancing. */
+    uint64_t migrating_threshold = ideal_delta / 10; /* 10% */
+    size_t cnt = 0;
 
     if (ovs_list_is_short(&from->entries)) {
         /* 'from' carries no more than one MAC hash, so shifting load away from
          * it would be pointless. */
-        return NULL;
+        return 0;
     }
 
     LIST_FOR_EACH (e, list_node, &from->entries) {
-        uint64_t delta = e->tx_bytes;  /* The amount to rebalance.  */
-        uint64_t ideal_tx_bytes = (from->tx_bytes + to_tx_bytes)/2;
-                             /* Note, the ideal traffic is the mid point
-                              * between 'from' and 'to'. This value does
-                              * not change by rebalancing.  */
-        uint64_t new_low;    /* The lower bandwidth between 'to' and 'from'
-                                after rebalancing. */
-
-        new_low = MIN(from->tx_bytes - delta, to_tx_bytes + delta);
-
-        if ((new_low > to_tx_bytes) &&
-            (new_low - to_tx_bytes >= (ideal_tx_bytes - to_tx_bytes) / 10)) {
-            /* Only rebalance if the new 'low' is closer to to the mid point,
-             * and the improvement exceeds 10% of current traffic
-             * deviation from the ideal split.
-             *
-             * The improvement on the 'high' side is always the same as the
-             * 'low' side. Thus consider 'low' side is sufficient.  */
-            return e;
+        if (delta + e->tx_bytes <= ideal_delta) {
+            /* Take next entry if amount to rebalance will not exceed ideal. */
+            to_migrate[cnt++] = e;
+            delta += e->tx_bytes;
+        }
+        if (ideal_delta - delta < migrating_threshold) {
+            /* Stop collecting hashes if we're close enough to ideal value
+             * to avoid frequent moving of light ones.  */
+            break;
         }
     }
 
-    return NULL;
+    if (!cnt) {
+        /* There is no entry which load less than or equal to 'ideal_delta'.
+         * Lets try closest one. The closest is the last in sorted list. */
+        struct bond_entry *closest;
+
+        ASSIGN_CONTAINER(closest, ovs_list_back(&from->entries), list_node);
+
+        delta = closest->tx_bytes;
+        to_migrate[cnt++] = closest;
+    }
+
+    new_low = MIN(from->tx_bytes - delta, to_tx_bytes + delta);
+    if ((new_low > to_tx_bytes) &&
+        (new_low - to_tx_bytes >= migrating_threshold)) {
+       /* Only rebalance if the new 'low' is closer to to the mid point and the
+        * improvement of traffic deviation from the ideal split exceeds 10%
+        * (migrating threshold).
+        *
+        * The improvement on the 'high' side is always the same as the 'low'
+        * side.  Thus consider 'low' side is sufficient. */
+        return cnt;
+    }
+
+    return 0;
 }
 
 /* Inserts 'slave' into 'bals' so that descending order of 'tx_bytes' is
@@ -1158,6 +1181,21 @@ reinsert_bal(struct ovs_list *bals, struct bond_slave *slave)
     insert_bal(bals, slave);
 }
 
+static int
+compare_bond_entries(const void *a_, const void *b_)
+{
+     const struct bond_entry *const *ap = a_;
+     const struct bond_entry *const *bp = b_;
+     const struct bond_entry *a = *ap;
+     const struct bond_entry *b = *bp;
+
+     if (a->tx_bytes != b->tx_bytes) {
+         return a->tx_bytes > b->tx_bytes ? -1 : 1;
+     } else {
+         return 0;
+     }
+}
+
 /* If 'bond' needs rebalancing, does so.
  *
  * The caller should have called bond_account() for each active flow, or in case
@@ -1168,10 +1206,11 @@ void
 bond_rebalance(struct bond *bond)
 {
     struct bond_slave *slave;
-    struct bond_entry *e;
+    struct bond_entry *e, *hashes[BOND_BUCKETS];
     struct ovs_list bals;
     bool rebalanced = false;
     bool use_recirc;
+    int i;
 
     ovs_rwlock_wrlock(&rwlock);
     if (!bond_is_balanced(bond) || time_msec() < bond->next_rebalance) {
@@ -1192,7 +1231,15 @@ bond_rebalance(struct bond *bond)
         slave->tx_bytes = 0;
         ovs_list_init(&slave->entries);
     }
-    for (e = &bond->hash[0]; e <= &bond->hash[BOND_MASK]; e++) {
+
+    for (i = 0; i < BOND_BUCKETS; i++) {
+        hashes[i] = &bond->hash[i];
+    }
+    qsort(hashes, BOND_BUCKETS, sizeof *hashes, compare_bond_entries);
+
+    /* Iteration over sorted bond hashes will give us sorted 'entries'. */
+    for (i = 0; i < BOND_BUCKETS; i++) {
+        e = hashes[i];
         if (e->slave && e->tx_bytes) {
             e->slave->tx_bytes += e->tx_bytes;
             ovs_list_push_back(&e->slave->entries, &e->list_node);
@@ -1216,6 +1263,7 @@ bond_rebalance(struct bond *bond)
         struct bond_slave *from = bond_slave_from_bal_node(ovs_list_front(&bals));
         struct bond_slave *to = bond_slave_from_bal_node(ovs_list_back(&bals));
         uint64_t overload;
+        size_t cnt;
 
         overload = from->tx_bytes - to->tx_bytes;
         if (overload < to->tx_bytes >> 5 || overload < 100000) {
@@ -1225,15 +1273,23 @@ bond_rebalance(struct bond *bond)
             break;
         }
 
-        /* 'from' is carrying significantly more load than 'to'.  Pick a hash
+        /* 'from' is carrying significantly more load than 'to'.  Pick a hashes
          * to move from 'from' to 'to'. */
-        e = choose_entry_to_migrate(from, to->tx_bytes);
-        if (e) {
+        cnt = choose_entries_to_migrate(from, to->tx_bytes, hashes);
+        if (!cnt) {
+            /* Can't usefully migrate anything away from 'from'.
+             * Don't reconsider it. */
+            ovs_list_remove(&from->bal_node);
+            continue;
+        }
+
+        for (i = 0; i < cnt; i++) {
+            e = hashes[i];
             bond_shift_load(e, to);
 
             /* Delete element from from->entries.
              *
-             * We don't add the element to to->hashes.  That would only allow
+             * We don't add the element to to->entries.  That would only allow
              * 'e' to be migrated to another slave in this rebalancing run, and
              * there is no point in doing that. */
             ovs_list_remove(&e->list_node);
@@ -1241,12 +1297,8 @@ bond_rebalance(struct bond *bond)
             /* Re-sort 'bals'. */
             reinsert_bal(&bals, from);
             reinsert_bal(&bals, to);
-            rebalanced = true;
-        } else {
-            /* Can't usefully migrate anything away from 'from'.
-             * Don't reconsider it. */
-            ovs_list_remove(&from->bal_node);
         }
+        rebalanced = true;
     }
 
     /* Implement exponentially weighted moving average.  A weight of 1/2 causes
