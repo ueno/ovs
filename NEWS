@@ -16,6 +16,11 @@ v2.12.0 - 03 Sep 2019
      * DPDK 18.11.1 and lower is no longer supported.
      * New option 'tx-retries-max' to set the maximum amount of vhost tx
        retries that can be made.
+     * New option 'other_config:dpdk-options' to pass all the
+       DPDK EAL argumants in a single string.
+     * Following config options deprecated:
+       'dpdk-alloc-mem', 'dpdk-socket-mem', 'dpdk-socket-limit',
+       'dpdk-lcore-mask', 'dpdk-hugepage-dir' and 'dpdk-extra'.
    - OpenFlow:
      * All features required by OpenFlow 1.5 are now implemented, so
        ovs-vswitchd now enables OpenFlow 1.5 by default (in addition to

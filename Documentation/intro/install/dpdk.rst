@@ -235,32 +235,44 @@ listed below. Defaults will be provided for all values not explicitly set.
   A value of ``try`` will imply that the ovs-vswitchd process should
   continue running even if the EAL initialization fails.
 
-``dpdk-lcore-mask``
-  Specifies the CPU cores on which dpdk lcore threads should be spawned and
-  expects hex string (eg '0x123').
+``dpdk-options``
+  Specifies the string of EAL command line arguments for DPDK.
+  For example, ``other_config:dpdk-options="-l 0 --socket-mem 1024,1024"``.
+  Important arguments that could be passed there are:
 
-``dpdk-socket-mem``
-  Comma separated list of memory to pre-allocate from hugepages on specific
-  sockets. If not specified, 1024 MB will be set for each numa node by
-  default.
+  - ``-c`` or ``-l``
 
-``dpdk-hugepage-dir``
-  Directory where hugetlbfs is mounted
+    Specifies the CPU cores on which dpdk lcore threads should be spawned.
+    ``-c`` expects hex string (eg ``0x123``) while ``-l`` expects core list
+    (eg ``0-5,8``).
+
+  - ``--socket-mem``
+
+    Comma separated list of memory to pre-allocate from hugepages on specific
+    sockets.
+
+  - ``--huge-dir``
+
+    Directory where hugetlbfs is mounted
+
+  - See DPDK documentation for the full list:
+
+    https://doc.dpdk.org/guides-18.11/linux_gsg/linux_eal_parameters.html
 
 ``vhost-sock-dir``
   Option to set the path to the vhost-user unix socket files.
 
-If allocating more than one GB hugepage, you can configure the
-amount of memory used from any given NUMA nodes. For example, to use 1GB from
-NUMA node 0 and 0GB for all other NUMA nodes, run::
+You can configure the amount of memory preallocated from any given NUMA nodes.
+For example, to preallocate ``1GB`` from NUMA node ``0`` and ``0GB`` for all
+other NUMA nodes, run::
 
     $ ovs-vsctl --no-wait set Open_vSwitch . \
-        other_config:dpdk-socket-mem="1024,0"
+        other_config:dpdk-options="<...> --socket-mem 1024,0"
 
 or::
 
     $ ovs-vsctl --no-wait set Open_vSwitch . \
-        other_config:dpdk-socket-mem="1024"
+        other_config:dpdk-options="<...> --socket-mem 1024"
 
 .. note::
   Changing any of these options requires restarting the ovs-vswitchd

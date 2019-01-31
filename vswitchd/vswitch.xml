@@ -264,6 +264,25 @@
         </p>
       </column>
 
+      <column name="other_config" key="pmd-cpu-mask">
+        <p>
+          Specifies CPU mask for setting the cpu affinity of PMD (Poll
+          Mode Driver) threads.  Value should be in the form of hex string,
+          similar to the dpdk EAL '-c COREMASK' option input or the 'taskset'
+          mask input.
+        </p>
+        <p>
+          The lowest order bit corresponds to the first CPU core.  A set bit
+          means the corresponding core is available and a pmd thread will be
+          created and pinned to it.  If the input does not cover all cores,
+          those uncovered cores are considered not set.
+        </p>
+        <p>
+          If not specified, one pmd thread will be created for each numa node
+          and pinned to any available core on the numa node by default.
+        </p>
+      </column>
+
       <column name="other_config" key="dpdk-init"
               type='{"type": "string",
                      "enum": ["set", ["false", "true", "try"]]}'>
@@ -288,123 +307,30 @@
         </p>
       </column>
 
-      <column name="other_config" key="dpdk-lcore-mask"
-              type='{"type": "integer", "minInteger": 1}'>
-        <p>
-          Specifies the CPU cores where dpdk lcore threads should be spawned.
-          The DPDK lcore threads are used for DPDK library tasks, such as
-          library internal message processing, logging, etc. Value should be in
-          the form of a hex string (so '0x123') similar to the 'taskset' mask
-          input.
-        </p>
-        <p>
-          The lowest order bit corresponds to the first CPU core.  A set bit
-          means the corresponding core is available and an lcore thread will be
-          created and pinned to it.  If the input does not cover all cores,
-          those uncovered cores are considered not set.
-        </p>
-        <p>
-          For performance reasons, it is best to set this to a single core on
-          the system, rather than allow lcore threads to float.
-        </p>
-        <p>
-          If not specified, the value will be determined by choosing the lowest
-          CPU core from initial cpu affinity list. Otherwise, the value will be
-          passed directly to the DPDK library.
-        </p>
-      </column>
-
-      <column name="other_config" key="pmd-cpu-mask">
-        <p>
-          Specifies CPU mask for setting the cpu affinity of PMD (Poll
-          Mode Driver) threads.  Value should be in the form of hex string,
-          similar to the dpdk EAL '-c COREMASK' option input or the 'taskset'
-          mask input.
-        </p>
-        <p>
-          The lowest order bit corresponds to the first CPU core.  A set bit
-          means the corresponding core is available and a pmd thread will be
-          created and pinned to it.  If the input does not cover all cores,
-          those uncovered cores are considered not set.
-        </p>
-        <p>
-          If not specified, one pmd thread will be created for each numa node
-          and pinned to any available core on the numa node by default.
-        </p>
-      </column>
-
-      <column name="other_config" key="dpdk-alloc-mem"
-              type='{"type": "integer", "minInteger": 0}'>
-        <p>
-          Specifies the amount of memory to preallocate from the hugepage pool,
-          regardless of socket. It is recommended that dpdk-socket-mem is used
-          instead.
-        </p>
-      </column>
-
-      <column name="other_config" key="dpdk-socket-mem"
+      <column name="other_config" key="dpdk-options"
               type='{"type": "string"}'>
         <p>
-          Specifies the amount of memory to preallocate from the hugepage pool,
-          on a per-socket basis.
+          Specifies EAL command line arguments for DPDK. For example,
+          <code>"-l 1 --socket-mem 1024,1024 -n 4"</code>
         </p>
         <p>
-          The specifier is a comma-separated string, in ascending order of CPU
-          socket. E.g. On a four socket system 1024,0,2048 would set socket 0
-          to preallocate 1024MB, socket 1 to preallocate 0MB, socket 2 to
-          preallocate 2048MB and socket 3 (no value given) to preallocate 0MB.
-        </p>
-        <p>
-          If dpdk-socket-mem and dpdk-alloc-mem are not specified, dpdk-socket-mem
-          will be used and the default value is 1024 for each numa node. If
-          dpdk-socket-mem and dpdk-alloc-mem are specified at same time,
-          dpdk-socket-mem will be used as default. Changing this value
-          requires restarting the daemon.
-        </p>
-      </column>
-
-      <column name="other_config" key="dpdk-socket-limit"
-              type='{"type": "string"}'>
-        <p>
-          Limits the maximum amount of memory that can be used from the
-          hugepage pool, on a per-socket basis.
-        </p>
-        <p>
-          The specifier is a comma-separated list of memory limits per socket.
-          <code>0</code> will disable the limit for a particular socket.
-        </p>
-        <p>
-          If not specified, OVS will configure limits equal to the amount of
-          preallocated memory specified by <ref column="other_config"
-          key="dpdk-socket-mem"/> or <code>--socket-mem</code> in
-          <ref column="other_config" key="dpdk-extra"/>. If none of the above
-          options specified or <code>--legacy-mem</code> provided in
-          <ref column="other_config" key="dpdk-extra"/>, limits will not be
-          applied.
           Changing this value requires restarting the daemon.
         </p>
-      </column>
-
-      <column name="other_config" key="dpdk-hugepage-dir"
-              type='{"type": "string"}'>
         <p>
-          Specifies the path to the hugetlbfs mount point.
+          If <code>-l</code> and <code>-c</code> options are not specified,
+          the default value will be provided by choosing the lowest CPU core
+          from initial cpu affinity list.
+          For performance reasons, it is best to set lcore set/list to a single
+          core on the system, rather than allow lcore threads to float.
+          CPU cores proveded by <code>-l</code> and <code>-c</code> options
+          only used by DPDK internal threads. To manage affinity of PMD threads
+          use <ref column="other_config" key="pmd-cpu-mask"/>.
         </p>
         <p>
-          If not specified, this will be guessed by the DPDK library (default
-          is /dev/hugepages). Changing this value requires restarting the
-          daemon.
-        </p>
-      </column>
-
-      <column name="other_config" key="dpdk-extra"
-              type='{"type": "string"}'>
-        <p>
-          Specifies additional eal command line arguments for DPDK.
-        </p>
-        <p>
-          The default is empty. Changing this value requires restarting the
-          daemon
+          if <code>--socket-mem</code> option provided without
+          <code>--legacy-mem</code> and <code>--socket-limit</code>, OVS will
+          provide <code>--socket-limit</code> equal to the amount of
+          preallocated memory specified by <code>--socket-mem</code>.
         </p>
       </column>
 

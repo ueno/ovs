@@ -95,6 +95,41 @@ args_contains(const struct svec *args, const char *value)
     return false;
 }
 
+static bool
+report_deprecated_configs(const struct smap *ovs_other_config, bool ignore)
+{
+    struct option {
+        const char *opt;
+        const char *replacement;
+    } options[] = {
+        { "dpdk-alloc-mem",    "-m"             },
+        { "dpdk-socket-mem",   "--socket-mem"   },
+        { "dpdk-socket-limit", "--socket-limit" },
+        { "dpdk-lcore-mask",   "-c"             },
+        { "dpdk-hugepage-dir", "--huge-dir"     },
+        { "dpdk-extra",        ""               }
+    };
+    int i;
+    bool found = false;
+
+    for (i = 0; i < ARRAY_SIZE(options); i++) {
+        const char *value = smap_get(ovs_other_config, options[i].opt);
+
+        if (value) {
+            VLOG_WARN("Detected deprecated '%s' config. Use '%s %s'"
+                      " in 'dpdk-options' instead.%s",
+                      options[i].opt, options[i].replacement, value,
+                      ignore ? " Value ignored." : "");
+            found = true;
+        }
+    }
+    if (found) {
+        VLOG_WARN("Deprecated options will be "
+                  "silently ignored in the future.");
+    }
+    return found;
+}
+
 static void
 construct_dpdk_options(const struct smap *ovs_other_config, struct svec *args)
 {
@@ -274,8 +309,10 @@ dpdk_init__(const struct smap *ovs_other_config)
     char **argv = NULL;
     int result;
     bool auto_determine = true;
+    bool deprecated_found;
     int err = 0;
     struct ovs_numa_dump *affinity = NULL;
+    const char *dpdk_options;
     struct svec args = SVEC_EMPTY_INITIALIZER;
 
     log_stream = fopencookie(NULL, "w+", dpdk_log_func);
@@ -330,7 +367,15 @@ dpdk_init__(const struct smap *ovs_other_config)
               per_port_memory ? "enabled" : "disabled");
 
     svec_add(&args, ovs_get_program_name());
-    construct_dpdk_args(ovs_other_config, &args);
+    dpdk_options = smap_get(ovs_other_config, "dpdk-options");
+
+    deprecated_found = report_deprecated_configs(ovs_other_config,
+                                                 dpdk_options ? true : false);
+    if (dpdk_options) {
+        svec_parse_words(&args, dpdk_options);
+    } else if (deprecated_found) {
+        construct_dpdk_args(ovs_other_config, &args);
+    }
 
     if (!args_contains(&args, "--legacy-mem")
         && !args_contains(&args, "--socket-limit")) {
@@ -370,7 +415,7 @@ dpdk_init__(const struct smap *ovs_other_config)
                 }
             }
         } else {
-            /* User did not set dpdk-lcore-mask and unable to get current
+            /* User did not set lcore mask and unable to get current
              * thread affintity - default to core #0 */
             VLOG_ERR("Thread getaffinity failed. Using core #0");
         }
