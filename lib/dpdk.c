@@ -95,8 +95,8 @@ args_contains(const struct svec *args, const char *value)
     return false;
 }
 
-static bool
-report_deprecated_configs(const struct smap *ovs_other_config, bool ignore)
+static void
+report_unsupported_configs(const struct smap *ovs_other_config)
 {
     struct option {
         const char *opt;
@@ -116,152 +116,16 @@ report_deprecated_configs(const struct smap *ovs_other_config, bool ignore)
         const char *value = smap_get(ovs_other_config, options[i].opt);
 
         if (value) {
-            VLOG_WARN("Detected deprecated '%s' config. Use '%s %s'"
-                      " in 'dpdk-options' instead.%s",
-                      options[i].opt, options[i].replacement, value,
-                      ignore ? " Value ignored." : "");
+            VLOG_WARN("Detected unsupported '%s' config. Use '%s %s'"
+                      " in 'dpdk-options' instead. Value ignored.",
+                      options[i].opt, options[i].replacement, value);
             found = true;
         }
     }
     if (found) {
-        VLOG_WARN("Deprecated options will be "
+        VLOG_WARN("Unsupported options will be "
                   "silently ignored in the future.");
     }
-    return found;
-}
-
-static void
-construct_dpdk_options(const struct smap *ovs_other_config, struct svec *args)
-{
-    struct dpdk_options_map {
-        const char *ovs_configuration;
-        const char *dpdk_option;
-        bool default_enabled;
-        const char *default_value;
-    } opts[] = {
-        {"dpdk-lcore-mask",   "-c",             false, NULL},
-        {"dpdk-hugepage-dir", "--huge-dir",     false, NULL},
-        {"dpdk-socket-limit", "--socket-limit", false, NULL},
-    };
-
-    int i;
-
-    /*First, construct from the flat-options (non-mutex)*/
-    for (i = 0; i < ARRAY_SIZE(opts); ++i) {
-        const char *value = smap_get(ovs_other_config,
-                                     opts[i].ovs_configuration);
-        if (!value && opts[i].default_enabled) {
-            value = opts[i].default_value;
-        }
-
-        if (value) {
-            if (!args_contains(args, opts[i].dpdk_option)) {
-                svec_add(args, opts[i].dpdk_option);
-                svec_add(args, value);
-            } else {
-                VLOG_WARN("Ignoring database defined option '%s' due to "
-                          "dpdk-extra config", opts[i].dpdk_option);
-            }
-        }
-    }
-}
-
-static char *
-construct_dpdk_socket_mem(void)
-{
-    const char *def_value = "1024";
-    int numa, numa_nodes = ovs_numa_get_n_numas();
-    struct ds dpdk_socket_mem = DS_EMPTY_INITIALIZER;
-
-    if (numa_nodes == 0 || numa_nodes == OVS_NUMA_UNSPEC) {
-        numa_nodes = 1;
-    }
-
-    ds_put_cstr(&dpdk_socket_mem, def_value);
-    for (numa = 1; numa < numa_nodes; ++numa) {
-        ds_put_format(&dpdk_socket_mem, ",%s", def_value);
-    }
-
-    return ds_cstr(&dpdk_socket_mem);
-}
-
-#define MAX_DPDK_EXCL_OPTS 10
-
-static void
-construct_dpdk_mutex_options(const struct smap *ovs_other_config,
-                             struct svec *args)
-{
-    char *default_dpdk_socket_mem = construct_dpdk_socket_mem();
-
-    struct dpdk_exclusive_options_map {
-        const char *category;
-        const char *ovs_dpdk_options[MAX_DPDK_EXCL_OPTS];
-        const char *eal_dpdk_options[MAX_DPDK_EXCL_OPTS];
-        const char *default_value;
-        int default_option;
-    } excl_opts[] = {
-        {"memory type",
-         {"dpdk-alloc-mem", "dpdk-socket-mem", NULL,},
-         {"-m",             "--socket-mem",    NULL,},
-         default_dpdk_socket_mem, 1
-        },
-    };
-
-    int i;
-    for (i = 0; i < ARRAY_SIZE(excl_opts); ++i) {
-        int found_opts = 0, scan, found_pos = -1;
-        const char *found_value;
-        struct dpdk_exclusive_options_map *popt = &excl_opts[i];
-
-        for (scan = 0; scan < MAX_DPDK_EXCL_OPTS
-                 && popt->ovs_dpdk_options[scan]; ++scan) {
-            const char *value = smap_get(ovs_other_config,
-                                         popt->ovs_dpdk_options[scan]);
-            if (value && strlen(value)) {
-                found_opts++;
-                found_pos = scan;
-                found_value = value;
-            }
-        }
-
-        if (!found_opts) {
-            if (popt->default_option) {
-                found_pos = popt->default_option;
-                found_value = popt->default_value;
-            } else {
-                continue;
-            }
-        }
-
-        if (found_opts > 1) {
-            VLOG_ERR("Multiple defined options for %s. Please check your"
-                     " database settings and reconfigure if necessary.",
-                     popt->category);
-        }
-
-        if (!args_contains(args, popt->eal_dpdk_options[found_pos])) {
-            svec_add(args, popt->eal_dpdk_options[found_pos]);
-            svec_add(args, found_value);
-        } else {
-            VLOG_WARN("Ignoring database defined option '%s' due to "
-                      "dpdk-extra config", popt->eal_dpdk_options[found_pos]);
-        }
-    }
-
-    free(default_dpdk_socket_mem);
-}
-
-static void
-construct_dpdk_args(const struct smap *ovs_other_config, struct svec *args)
-{
-    const char *extra_configuration = smap_get(ovs_other_config, "dpdk-extra");
-
-    if (extra_configuration) {
-        svec_parse_words(args, extra_configuration);
-    }
-
-    construct_dpdk_options(ovs_other_config, args);
-    construct_dpdk_mutex_options(ovs_other_config, args);
 }
 
 static ssize_t
@@ -309,7 +173,6 @@ dpdk_init__(const struct smap *ovs_other_config)
     char **argv = NULL;
     int result;
     bool auto_determine = true;
-    bool deprecated_found;
     int err = 0;
     struct ovs_numa_dump *affinity = NULL;
     const char *dpdk_options;
@@ -366,15 +229,13 @@ dpdk_init__(const struct smap *ovs_other_config)
     VLOG_INFO("Per port memory for DPDK devices %s.",
               per_port_memory ? "enabled" : "disabled");
 
+    report_unsupported_configs(ovs_other_config);
+
     svec_add(&args, ovs_get_program_name());
     dpdk_options = smap_get(ovs_other_config, "dpdk-options");
 
-    deprecated_found = report_deprecated_configs(ovs_other_config,
-                                                 dpdk_options ? true : false);
     if (dpdk_options) {
         svec_parse_words(&args, dpdk_options);
-    } else if (deprecated_found) {
-        construct_dpdk_args(ovs_other_config, &args);
     }
 
     if (!args_contains(&args, "--legacy-mem")
