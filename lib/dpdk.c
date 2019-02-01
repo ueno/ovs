@@ -95,39 +95,6 @@ args_contains(const struct svec *args, const char *value)
     return false;
 }
 
-static void
-report_unsupported_configs(const struct smap *ovs_other_config)
-{
-    struct option {
-        const char *opt;
-        const char *replacement;
-    } options[] = {
-        { "dpdk-alloc-mem",    "-m"             },
-        { "dpdk-socket-mem",   "--socket-mem"   },
-        { "dpdk-socket-limit", "--socket-limit" },
-        { "dpdk-lcore-mask",   "-c"             },
-        { "dpdk-hugepage-dir", "--huge-dir"     },
-        { "dpdk-extra",        ""               }
-    };
-    int i;
-    bool found = false;
-
-    for (i = 0; i < ARRAY_SIZE(options); i++) {
-        const char *value = smap_get(ovs_other_config, options[i].opt);
-
-        if (value) {
-            VLOG_WARN("Detected unsupported '%s' config. Use '%s %s'"
-                      " in 'dpdk-options' instead. Value ignored.",
-                      options[i].opt, options[i].replacement, value);
-            found = true;
-        }
-    }
-    if (found) {
-        VLOG_WARN("Unsupported options will be "
-                  "silently ignored in the future.");
-    }
-}
-
 static ssize_t
 dpdk_log_write(void *c OVS_UNUSED, const char *buf, size_t size)
 {
@@ -228,8 +195,6 @@ dpdk_init__(const struct smap *ovs_other_config)
                                     "per-port-memory", false);
     VLOG_INFO("Per port memory for DPDK devices %s.",
               per_port_memory ? "enabled" : "disabled");
-
-    report_unsupported_configs(ovs_other_config);
 
     svec_add(&args, ovs_get_program_name());
     dpdk_options = smap_get(ovs_other_config, "dpdk-options");
