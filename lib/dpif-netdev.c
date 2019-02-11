@@ -3792,9 +3792,12 @@ set_pmd_auto_lb(struct dp_netdev *dp)
             continue;
         }
 
+        ovs_mutex_lock(&pmd->port_mutex);
         if (hmap_count(&pmd->poll_list) > 1) {
             multi_rxq = true;
         }
+        ovs_mutex_unlock(&pmd->port_mutex);
+
         if (cnt && multi_rxq) {
                 enable_alb = true;
                 break;
