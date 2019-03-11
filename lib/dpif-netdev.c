@@ -6255,24 +6255,9 @@ dp_netdev_upcall(struct dp_netdev_pmd_thread *pmd, struct dp_packet *packet_,
 }
 
 static inline uint32_t
-dpif_netdev_packet_get_rss_hash_orig_pkt(struct dp_packet *packet,
-                                const struct miniflow *mf)
-{
-    uint32_t hash;
-
-    if (OVS_LIKELY(dp_packet_rss_valid(packet))) {
-        hash = dp_packet_get_rss_hash(packet);
-    } else {
-        hash = miniflow_hash_5tuple(mf, 0);
-        dp_packet_set_rss_hash(packet, hash);
-    }
-
-    return hash;
-}
-
-static inline uint32_t
 dpif_netdev_packet_get_rss_hash(struct dp_packet *packet,
-                                const struct miniflow *mf)
+                                const struct miniflow *mf,
+                                bool account_recirc_depth)
 {
     uint32_t hash, recirc_depth;
 
@@ -6283,10 +6268,10 @@ dpif_netdev_packet_get_rss_hash(struct dp_packet *packet,
         dp_packet_set_rss_hash(packet, hash);
     }
 
-    /* The RSS hash must account for the recirculation depth to avoid
-     * collisions in the exact match cache */
-    recirc_depth = *recirc_depth_get_unsafe();
-    if (OVS_UNLIKELY(recirc_depth)) {
+    if (account_recirc_depth
+        && (recirc_depth = *recirc_depth_get_unsafe()) != 0) {
+        /* The RSS hash must account for the recirculation depth to avoid
+         * collisions in the exact match cache */
         hash = hash_finish(hash, recirc_depth);
         dp_packet_set_rss_hash(packet, hash);
     }
@@ -6527,11 +6512,8 @@ dfc_processing(struct dp_netdev_pmd_thread *pmd,
 
         miniflow_extract(packet, &key->mf);
         key->len = 0; /* Not computed yet. */
-        key->hash =
-                (md_is_valid == false)
-                ? dpif_netdev_packet_get_rss_hash_orig_pkt(packet, &key->mf)
-                : dpif_netdev_packet_get_rss_hash(packet, &key->mf);
-
+        key->hash = dpif_netdev_packet_get_rss_hash(packet, &key->mf,
+                                                    md_is_valid);
         /* If EMC is disabled skip emc_lookup */
         flow = (cur_min != 0) ? emc_lookup(&cache->emc_cache, key) : NULL;
         if (OVS_LIKELY(flow)) {
