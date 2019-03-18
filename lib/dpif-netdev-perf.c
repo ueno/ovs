@@ -326,14 +326,14 @@ pmd_perf_format_histograms(struct ds *str, struct pmd_perf_stats *s)
                       "vhost qlen", "upcalls/it", "cycles/upcall");
         ds_put_format(str,
                       "   %-21"PRIu64"  %-21.5f  %-21"PRIu64
-                      "  %-21.5f  %-21.5f  %-21.5f  %-21"PRIu32"\n",
+                      "  %-21.5f  %-21"PRIu32"  %-21.5f  %-21"PRIu32"\n",
                       s->totals.cycles / s->totals.iterations,
                       1.0 * s->totals.pkts / s->totals.iterations,
                       s->totals.pkts
                           ? s->totals.busy_cycles / s->totals.pkts : 0,
                       s->totals.batches
                           ? 1.0 * s->totals.pkts / s->totals.batches : 0,
-                      1.0 * s->totals.max_vhost_qfill / s->totals.iterations,
+                      s->totals.max_vhost_qfill,
                       1.0 * s->totals.upcalls / s->totals.iterations,
                       s->totals.upcalls
                           ? s->totals.upcall_cycles / s->totals.upcalls : 0);
@@ -401,8 +401,7 @@ pmd_perf_format_ms_history(struct ds *str, struct pmd_perf_stats *s, int n_ms)
                       is->pkts,
                       is->pkts ? is->busy_cycles / is->pkts : 0,
                       is->batches ? is->pkts / is->batches : 0,
-                      is->iterations
-                          ? is->max_vhost_qfill / is->iterations : 0,
+                      is->max_vhost_qfill,
                       is->upcalls,
                       is->upcalls ? is->upcall_cycles / is->upcalls : 0);
     }
@@ -551,7 +550,8 @@ pmd_perf_end_iteration(struct pmd_perf_stats *s, int rx_packets,
     cum_ms->upcalls += s->current.upcalls;
     cum_ms->upcall_cycles += s->current.upcall_cycles;
     cum_ms->batches += s->current.batches;
-    cum_ms->max_vhost_qfill += s->current.max_vhost_qfill;
+    cum_ms->max_vhost_qfill = MAX(cum_ms->max_vhost_qfill,
+                                  s->current.max_vhost_qfill);
 
     if (log_enabled) {
         /* Log suspicious iterations. */
@@ -589,7 +589,8 @@ pmd_perf_end_iteration(struct pmd_perf_stats *s, int rx_packets,
             s->totals.upcalls += cum_ms->upcalls;
             s->totals.upcall_cycles += cum_ms->upcall_cycles;
             s->totals.batches += cum_ms->batches;
-            s->totals.max_vhost_qfill += cum_ms->max_vhost_qfill;
+            s->totals.max_vhost_qfill = MAX(s->totals.max_vhost_qfill,
+                                            cum_ms->max_vhost_qfill);
             cum_ms = history_next(&s->milliseconds);
             cum_ms->timestamp = now;
         }
