@@ -389,6 +389,7 @@ enum rxq_cycles_counter_type {
     RXQ_CYCLES_PROC_CURR,       /* Cycles spent successfully polling and
                                    processing packets during the current
                                    interval. */
+    RXQ_CYCLES_PROC_HIST_CURR,  /* Total cycles of all intervals. */
     RXQ_CYCLES_PROC_HIST,       /* Total cycles of all intervals that are used
                                    during rxq to pmd assignment. */
     RXQ_N_CYCLES
@@ -837,6 +838,8 @@ dp_netdev_rxq_set_cycles(struct dp_netdev_rxq *rx,
 static uint64_t
 dp_netdev_rxq_get_cycles(struct dp_netdev_rxq *rx,
                          enum rxq_cycles_counter_type type);
+static void
+dp_netdev_rxq_update_cycles_history(struct dp_netdev_rxq *rx);
 static void
 dp_netdev_rxq_set_intrvl_cycles(struct dp_netdev_rxq *rx,
                            unsigned long long cycles);
@@ -4137,11 +4140,25 @@ dp_netdev_rxq_get_cycles(struct dp_netdev_rxq *rx,
 }
 
 static void
+dp_netdev_rxq_update_cycles_history(struct dp_netdev_rxq *rx)
+{
+    uint64_t current_history;
+
+    current_history = dp_netdev_rxq_get_cycles(rx, RXQ_CYCLES_PROC_HIST_CURR);
+    dp_netdev_rxq_set_cycles(rx, RXQ_CYCLES_PROC_HIST, current_history);
+}
+
+static void
 dp_netdev_rxq_set_intrvl_cycles(struct dp_netdev_rxq *rx,
                                 unsigned long long cycles)
 {
     unsigned int idx = rx->intrvl_idx++ % PMD_RXQ_INTERVAL_MAX;
+    unsigned long long outdated;
+
+    atomic_read_relaxed(&rx->cycles_intrvl[idx], &outdated);
     atomic_store_relaxed(&rx->cycles_intrvl[idx], cycles);
+
+    dp_netdev_rxq_add_cycles(rx, RXQ_CYCLES_PROC_HIST_CURR, cycles - outdated);
 }
 
 static uint64_t
@@ -4575,8 +4592,6 @@ rxq_scheduling(struct dp_netdev *dp, bool pinned) OVS_REQUIRES(dp->port_mutex)
                     dp_netdev_pmd_unref(pmd);
                 }
             } else if (!pinned && q->core_id == OVS_CORE_UNSPEC) {
-                uint64_t cycle_hist = 0;
-
                 if (n_rxqs == 0) {
                     rxqs = xmalloc(sizeof *rxqs);
                 } else {
@@ -4584,12 +4599,8 @@ rxq_scheduling(struct dp_netdev *dp, bool pinned) OVS_REQUIRES(dp->port_mutex)
                 }
 
                 if (assign_cyc) {
-                    /* Sum the queue intervals and store the cycle history. */
-                    for (unsigned i = 0; i < PMD_RXQ_INTERVAL_MAX; i++) {
-                        cycle_hist += dp_netdev_rxq_get_intrvl_cycles(q, i);
-                    }
-                    dp_netdev_rxq_set_cycles(q, RXQ_CYCLES_PROC_HIST,
-                                             cycle_hist);
+                    /* Update the cycle history. */
+                    dp_netdev_rxq_update_cycles_history(q);
                 }
                 /* Store the queue. */
                 rxqs[n_rxqs++] = q;
@@ -5053,7 +5064,6 @@ get_dry_run_variance(struct dp_netdev *dp, uint32_t *core_list,
 
         for (int qid = 0; qid < port->n_rxq; qid++) {
             struct dp_netdev_rxq *q = &port->rxqs[qid];
-            uint64_t cycle_hist = 0;
 
             if (q->pmd->isolated) {
                 continue;
@@ -5065,13 +5075,7 @@ get_dry_run_variance(struct dp_netdev *dp, uint32_t *core_list,
                 rxqs = xrealloc(rxqs, sizeof *rxqs * (n_rxqs + 1));
             }
 
-            /* Sum the queue intervals and store the cycle history. */
-            for (unsigned i = 0; i < PMD_RXQ_INTERVAL_MAX; i++) {
-                cycle_hist += dp_netdev_rxq_get_intrvl_cycles(q, i);
-            }
-            dp_netdev_rxq_set_cycles(q, RXQ_CYCLES_PROC_HIST,
-                                         cycle_hist);
-            /* Store the queue. */
+            dp_netdev_rxq_update_cycles_history(q);
             rxqs[n_rxqs++] = q;
         }
     }
