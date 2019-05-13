@@ -44,6 +44,7 @@
 #include "simap.h"
 #include "smap.h"
 #include "socket-util.h"
+#include "sset.h"
 #include "unaligned.h"
 #include "unixctl.h"
 #include "openvswitch/vlog.h"
@@ -118,6 +119,36 @@ const char *
 netdev_vport_class_get_dpif_port(const struct netdev_class *class)
 {
     return is_vport_class(class) ? vport_class_cast(class)->dpif_port : NULL;
+}
+
+bool
+netdev_vport_has_system_port(const struct netdev *netdev)
+{
+    bool found = false;
+    const char *name;
+    const char *type = "system";
+    struct sset names = SSET_INITIALIZER(&names);
+
+    ovs_assert(is_vport_class(netdev_get_class(netdev)));
+
+    dp_enumerate_names(type, &names);
+    SSET_FOR_EACH (name, &names) {
+        struct dpif *dpifp = NULL;
+
+        if (dpif_open(name, type, &dpifp)) {
+            continue;
+        }
+
+        found = dpif_port_exists(dpifp, netdev_get_name(netdev));
+
+        dpif_close(dpifp);
+        if (found) {
+            break;
+        }
+    }
+    sset_destroy(&names);
+
+    return found;
 }
 
 const char *

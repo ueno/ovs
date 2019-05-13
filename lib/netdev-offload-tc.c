@@ -31,6 +31,7 @@
 #include "netdev-linux.h"
 #include "netdev-offload-provider.h"
 #include "netdev-provider.h"
+#include "netdev-vport.h"
 #include "netlink.h"
 #include "netlink-socket.h"
 #include "odp-netlink.h"
@@ -1638,6 +1639,13 @@ netdev_tc_init_flow_api(struct netdev *netdev)
     uint32_t block_id = 0;
     int ifindex;
     int error;
+
+    if (netdev_vport_is_vport_class(netdev->netdev_class)
+        && !netdev_vport_has_system_port(netdev)) {
+        VLOG_DBG("%s: vport has no backing system interface. Skipping.",
+                 netdev_get_name(netdev));
+        return EOPNOTSUPP;
+    }
 
     ifindex = netdev_get_ifindex(netdev);
     if (ifindex < 0) {

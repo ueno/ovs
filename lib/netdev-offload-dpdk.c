@@ -22,6 +22,7 @@
 #include "dpif-netdev.h"
 #include "netdev-offload-provider.h"
 #include "netdev-provider.h"
+#include "netdev-vport.h"
 #include "openvswitch/match.h"
 #include "openvswitch/vlog.h"
 #include "packets.h"
@@ -752,6 +753,13 @@ netdev_offload_dpdk_flow_del(struct netdev *netdev, const ovs_u128 *ufid,
 static int
 netdev_offload_dpdk_init_flow_api(struct netdev *netdev)
 {
+    if (netdev_vport_is_vport_class(netdev->netdev_class)
+        && netdev_vport_has_system_port(netdev)) {
+        VLOG_DBG("%s: vport has backing system interface. Skipping.",
+                 netdev_get_name(netdev));
+        return EOPNOTSUPP;
+    }
+
     return netdev_dpdk_flow_api_supported(netdev) ? 0 : EOPNOTSUPP;
 }
 
