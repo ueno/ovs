@@ -86,6 +86,11 @@ function install_dpdk()
         sed -i '/CONFIG_RTE_BUILD_SHARED_LIB=n/s/=n/=y/' config/common_base
         export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(pwd)/$TARGET/lib
     fi
+
+    # Disable building DPDK kernel modules. Not needed for OVS build/tests.
+    sed -i '/CONFIG_RTE_EAL_IGB_UIO=y/s/=y/=n/' config/common_linuxapp
+    sed -i '/CONFIG_RTE_KNI_KMOD=y/s/=y/=n/' config/common_linuxapp
+
     make config CC=gcc T=$TARGET
     make -j4 CC=gcc RTE_KERNELDIR=$KERNELSRC
     echo "Installed DPDK source in $(pwd)"
@@ -97,7 +102,7 @@ function configure_ovs()
     ./boot.sh && ./configure $* || { cat config.log; exit 1; }
 }
 
-if [ "$KERNEL" ] || [ "$DPDK" ] || [ "$DPDK_SHARED" ]; then
+if [ "$KERNEL" ]; then
     install_kernel $KERNEL
 fi
 
@@ -144,7 +149,7 @@ else
     make selinux-policy
 
     # Only build datapath if we are testing kernel w/o running testsuite
-    if [ "$KERNEL" ] && [ ! "$DPDK" ] && [ ! "$DPDK_SHARED" ]; then
+    if [ "$KERNEL" ]; then
         cd datapath
     fi
     make -j4
