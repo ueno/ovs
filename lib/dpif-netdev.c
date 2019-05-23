@@ -35,6 +35,7 @@
 
 #include "bitmap.h"
 #include "cmap.h"
+#include "ccmap.h"
 #include "conntrack.h"
 #include "coverage.h"
 #include "ct-dpif.h"
@@ -514,6 +515,8 @@ struct dp_netdev_flow {
     /* Hash table index by unmasked flow. */
     const struct cmap_node node; /* In owning dp_netdev_pmd_thread's */
                                  /* 'flow_table'. */
+    const struct cmap_node direct_output_node; /* In dp_netdev_pmd_thread's
+                                                 'direct_output_table'. */
     const struct cmap_node mark_node; /* In owning flow_mark's mark_to_flow */
     const ovs_u128 ufid;         /* Unique flow identifier. */
     const ovs_u128 mega_ufid;    /* Unique mega flow identifier. */
@@ -641,12 +644,17 @@ struct dp_netdev_pmd_thread {
 
     /* Flow-Table and classifiers
      *
-     * Writers of 'flow_table' must take the 'flow_mutex'.  Corresponding
-     * changes to 'classifiers' must be made while still holding the
-     * 'flow_mutex'.
+     * Writers of 'flow_table'/'direct_output_table' must take the 'flow_mutex'.
+     * Corresponding changes to 'classifiers' must be made while still holding
+     * the 'flow_mutex'.
      */
     struct ovs_mutex flow_mutex;
     struct cmap flow_table OVS_GUARDED; /* Flow table. */
+    struct ccmap n_flows; /* Number of flows in 'flow_table' per in_port. */
+    struct cmap direct_output_table OVS_GUARDED; /* Flow table with direct
+                                                    output flows only. */
+    struct ccmap n_direct_flows; /* Number of flows in 'direct_output_table'
+                                    per in_port. */
 
     /* One classifier per in_port polled by the pmd */
     struct cmap classifiers;
@@ -860,6 +868,24 @@ static inline bool
 pmd_perf_metrics_enabled(const struct dp_netdev_pmd_thread *pmd);
 static void queue_netdev_flow_del(struct dp_netdev_pmd_thread *pmd,
                                   struct dp_netdev_flow *flow);
+
+static void dp_netdev_direct_output_insert(struct dp_netdev_pmd_thread *pmd,
+                                           struct dp_netdev_flow *flow)
+    OVS_REQUIRES(pmd->flow_mutex);
+static void dp_netdev_direct_output_remove(struct dp_netdev_pmd_thread *pmd,
+                                           struct dp_netdev_flow *flow)
+    OVS_REQUIRES(pmd->flow_mutex);
+
+static bool dp_netdev_flow_is_direct_output(const struct flow_wildcards *wc,
+                                            const struct nlattr *actions,
+                                            size_t actions_len);
+static bool
+dp_netdev_direct_output_enabled(const struct dp_netdev_pmd_thread *pmd,
+                                odp_port_t in_port);
+static struct dp_netdev_flow *
+dp_netdev_direct_output_lookup(const struct dp_netdev_pmd_thread *pmd,
+                               odp_port_t in_port,
+                               ovs_be16 dp_type, uint8_t nw_frag);
 
 static void
 emc_cache_init(struct emc_cache *flow_cache)
@@ -2553,7 +2579,9 @@ dp_netdev_pmd_remove_flow(struct dp_netdev_pmd_thread *pmd,
     cls = dp_netdev_pmd_lookup_dpcls(pmd, in_port);
     ovs_assert(cls != NULL);
     dpcls_remove(cls, &flow->cr);
+    dp_netdev_direct_output_remove(pmd, flow);
     cmap_remove(&pmd->flow_table, node, dp_netdev_flow_hash(&flow->ufid));
+    ccmap_dec(&pmd->n_flows, in_port);
     if (flow->mark != INVALID_FLOW_MARK) {
         queue_netdev_flow_del(pmd, flow);
     }
@@ -3211,10 +3239,147 @@ dp_netdev_get_mega_ufid(const struct match *match, ovs_u128 *mega_ufid)
     dpif_flow_hash(NULL, &masked_flow, sizeof(struct flow), mega_ufid);
 }
 
+static uint64_t
+dp_netdev_direct_output_mark(odp_port_t in_port,
+                             ovs_be16 dl_type, uint8_t nw_frag)
+{
+    return ((uint64_t) in_port << 32) | ((uint32_t) dl_type << 16) | nw_frag;
+}
+
+static struct dp_netdev_flow *
+dp_netdev_direct_output_lookup(const struct dp_netdev_pmd_thread *pmd,
+                               odp_port_t in_port,
+                               ovs_be16 dl_type, uint8_t nw_frag)
+{
+    uint64_t mark;
+    const struct cmap_node *node;
+
+    mark = dp_netdev_direct_output_mark(in_port, dl_type, nw_frag);
+    VLOG_INFO("dp_netdev_direct_output_lookup: 0x%"PRIx64, mark);
+    node = cmap_find(&pmd->direct_output_table, mark);
+
+    return node
+           ? CONTAINER_OF(node, struct dp_netdev_flow, direct_output_node)
+           : NULL;
+}
+
+static bool
+dp_netdev_direct_output_enabled(const struct dp_netdev_pmd_thread *pmd,
+                                odp_port_t in_port)
+{
+    return ccmap_find(&pmd->n_flows, in_port)
+           == ccmap_find(&pmd->n_direct_flows, in_port);
+}
+
+static void
+dp_netdev_direct_output_insert(struct dp_netdev_pmd_thread *pmd,
+                               struct dp_netdev_flow *dp_flow)
+    OVS_REQUIRES(pmd->flow_mutex)
+{
+    uint64_t mark;
+    const struct cmap_node *node;
+    odp_port_t in_port = dp_flow->flow.in_port.odp_port;
+
+    if (!dp_netdev_flow_ref(dp_flow)) {
+        return;
+    }
+
+    mark = dp_netdev_direct_output_mark(in_port, dp_flow->flow.dl_type,
+                                                 dp_flow->flow.nw_frag);
+
+    node = cmap_find(&pmd->direct_output_table, mark);
+    if (node) {
+        struct dp_netdev_flow *old;
+
+        old = CONTAINER_OF(node, struct dp_netdev_flow, direct_output_node);
+        cmap_remove(&pmd->direct_output_table,
+                    CONST_CAST(struct cmap_node *, node), mark);
+        ccmap_dec(&pmd->n_direct_flows, in_port);
+        dp_netdev_flow_unref(old);
+    }
+
+    cmap_insert(&pmd->direct_output_table,
+                CONST_CAST(struct cmap_node *, &dp_flow->direct_output_node),
+                mark);
+    ccmap_inc(&pmd->n_direct_flows, in_port);
+    VLOG_INFO("dp_netdev_direct_output_insert: 0x%"PRIx64, mark);
+}
+
+static void
+dp_netdev_direct_output_remove(struct dp_netdev_pmd_thread *pmd,
+                               struct dp_netdev_flow *dp_flow)
+    OVS_REQUIRES(pmd->flow_mutex)
+{
+    uint64_t mark;
+    const struct cmap_node *node;
+    odp_port_t in_port = dp_flow->flow.in_port.odp_port;
+
+    mark = dp_netdev_direct_output_mark(in_port, dp_flow->flow.dl_type,
+                                                 dp_flow->flow.nw_frag);
+    node = cmap_find(&pmd->direct_output_table, mark);
+    if (node) {
+        VLOG_INFO("Removing from direct output table.");
+        ovs_assert(&dp_flow->direct_output_node == node);
+        cmap_remove(&pmd->direct_output_table,
+                    CONST_CAST(struct cmap_node *, node), mark);
+        ccmap_dec(&pmd->n_direct_flows, in_port);
+        dp_netdev_flow_unref(dp_flow);
+    }
+}
+
+static bool
+dp_netdev_flow_is_direct_output(const struct flow_wildcards *wc,
+                                const struct nlattr *actions,
+                                size_t actions_len)
+{
+    unsigned int left, n_actions = 0;
+    const struct nlattr *a;
+
+    if (!actions || !actions_len) {
+        return false;
+    }
+
+    NL_ATTR_FOR_EACH (a, left, actions, actions_len) {
+        enum ovs_action_attr type = nl_attr_type(a);
+
+        if (++n_actions > 1 || type != OVS_ACTION_ATTR_OUTPUT) {
+            return false;
+        }
+    }
+
+    if (wc) {
+        struct flow_wildcards *minimal = xmalloc(sizeof *minimal);
+
+        flow_wildcards_init_catchall(minimal);
+        /* 'dpif-netdev' always has following in exact match:
+         *   - recirc_id                   <-- recirc_id == 0 checked on input.
+         *   - in_port                     <-- will be checked on input.
+         *   - packet_type                 <-- Assuming all packets are PT_ETH.
+         *   - dl_type                     <-- Need to match with.
+         *   - vlan_tci                    <-- No need to match if not asked ?
+         *   - and nw_frag for ip packets. <-- Need to match for ip packets.
+         */
+        WC_MASK_FIELD(minimal, recirc_id);
+        WC_MASK_FIELD(minimal, in_port);
+        WC_MASK_FIELD(minimal, packet_type);
+        WC_MASK_FIELD(minimal, dl_type);
+        WC_MASK_FIELD(minimal, nw_frag);
+        if (!flow_wildcards_has_extra(minimal, wc)) {
+            free(minimal);
+            return false;
+        }
+        free(minimal);
+    }
+
+    return true;
+}
+
+
 static struct dp_netdev_flow *
 dp_netdev_flow_add(struct dp_netdev_pmd_thread *pmd,
                    struct match *match, const ovs_u128 *ufid,
-                   const struct nlattr *actions, size_t actions_len)
+                   const struct nlattr *actions, size_t actions_len,
+                   bool vlan_tci_wc_faked)
     OVS_REQUIRES(pmd->flow_mutex)
 {
     struct dp_netdev_flow *flow;
@@ -3262,6 +3427,18 @@ dp_netdev_flow_add(struct dp_netdev_pmd_thread *pmd,
 
     cmap_insert(&pmd->flow_table, CONST_CAST(struct cmap_node *, &flow->node),
                 dp_netdev_flow_hash(&flow->ufid));
+    ccmap_inc(&pmd->n_flows, in_port);
+
+    VLOG_INFO("dp_netdev_flow_add: miniflow_n_values(&mask.mf) = %"PRIu64", actions_len = %"PRIuSIZE".",
+              miniflow_n_values(&mask.mf), actions_len);
+    VLOG_INFO("dp_netdev_flow_add: match->wc.masks.nw_frag = 0x%"PRIx8, match->wc.masks.nw_frag);
+    VLOG_INFO("dp_netdev_flow_add: match->flow.nw_frag = 0x%"PRIx8, match->flow.nw_frag);
+
+    if (vlan_tci_wc_faked && match->flow.recirc_id == 0 &&
+        dp_netdev_flow_is_direct_output(&match->wc, actions, actions_len)) {
+        VLOG_INFO("Inserting to direct output table.");
+        dp_netdev_direct_output_insert(pmd, flow);
+    }
 
     queue_netdev_flow_put(pmd, flow, match, actions, actions_len);
 
@@ -3318,7 +3495,8 @@ flow_put_on_pmd(struct dp_netdev_pmd_thread *pmd,
                 struct match *match,
                 ovs_u128 *ufid,
                 const struct dpif_flow_put *put,
-                struct dpif_flow_stats *stats)
+                struct dpif_flow_stats *stats,
+                bool vlan_tci_wc_faked)
 {
     struct dp_netdev_flow *netdev_flow;
     int error = 0;
@@ -3333,7 +3511,7 @@ flow_put_on_pmd(struct dp_netdev_pmd_thread *pmd,
         if (put->flags & DPIF_FP_CREATE) {
             if (cmap_count(&pmd->flow_table) < MAX_FLOWS) {
                 dp_netdev_flow_add(pmd, match, ufid, put->actions,
-                                   put->actions_len);
+                                   put->actions_len, vlan_tci_wc_faked);
                 error = 0;
             } else {
                 error = EFBIG;
@@ -3351,6 +3529,12 @@ flow_put_on_pmd(struct dp_netdev_pmd_thread *pmd,
 
             old_actions = dp_netdev_flow_get_actions(netdev_flow);
             ovsrcu_set(&netdev_flow->actions, new_actions);
+
+            if (!dp_netdev_flow_is_direct_output(NULL, new_actions->actions,
+                                                       new_actions->size)) {
+                /* New actions are not direct output. */
+                dp_netdev_direct_output_remove(pmd, netdev_flow);
+            }
 
             queue_netdev_flow_put(pmd, netdev_flow, match,
                                   put->actions, put->actions_len);
@@ -3393,6 +3577,7 @@ dpif_netdev_flow_put(struct dpif *dpif, const struct dpif_flow_put *put)
     ovs_u128 ufid;
     int error;
     bool probe = put->flags & DPIF_FP_PROBE;
+    bool vlan_tci_wc_faked = false;
 
     if (put->stats) {
         memset(put->stats, 0, sizeof *put->stats);
@@ -3422,6 +3607,7 @@ dpif_netdev_flow_put(struct dpif *dpif, const struct dpif_flow_put *put)
      * Netlink and struct flow representations, we have to do the same
      * here.  This must be in sync with 'match' in handle_packet_upcall(). */
     if (!match.wc.masks.vlans[0].tci) {
+        vlan_tci_wc_faked = true;
         match.wc.masks.vlans[0].tci = htons(0xffff);
     }
 
@@ -3440,7 +3626,7 @@ dpif_netdev_flow_put(struct dpif *dpif, const struct dpif_flow_put *put)
             int pmd_error;
 
             pmd_error = flow_put_on_pmd(pmd, &key, &match, &ufid, put,
-                                        &pmd_stats);
+                                        &pmd_stats, vlan_tci_wc_faked);
             if (pmd_error) {
                 error = pmd_error;
             } else if (put->stats) {
@@ -3455,7 +3641,8 @@ dpif_netdev_flow_put(struct dpif *dpif, const struct dpif_flow_put *put)
         if (!pmd) {
             return EINVAL;
         }
-        error = flow_put_on_pmd(pmd, &key, &match, &ufid, put, put->stats);
+        error = flow_put_on_pmd(pmd, &key, &match, &ufid, put, put->stats,
+                                vlan_tci_wc_faked);
         dp_netdev_pmd_unref(pmd);
     }
 
@@ -6003,6 +6190,9 @@ dp_netdev_configure_pmd(struct dp_netdev_pmd_thread *pmd, struct dp_netdev *dp,
     ovs_mutex_init(&pmd->flow_mutex);
     ovs_mutex_init(&pmd->port_mutex);
     cmap_init(&pmd->flow_table);
+    ccmap_init(&pmd->n_flows);
+    cmap_init(&pmd->direct_output_table);
+    ccmap_init(&pmd->n_direct_flows);
     cmap_init(&pmd->classifiers);
     pmd->ctx.last_rxq = NULL;
     pmd_thread_ctx_time_update(pmd);
@@ -6490,7 +6680,7 @@ dfc_processing(struct dp_netdev_pmd_thread *pmd,
                             cnt);
 
     DP_PACKET_BATCH_REFILL_FOR_EACH (i, cnt, packet, packets_) {
-        struct dp_netdev_flow *flow;
+        struct dp_netdev_flow *flow = NULL;
         uint32_t mark;
 
         if (OVS_UNLIKELY(dp_packet_size(packet) < ETH_HEADER_LEN)) {
@@ -6507,13 +6697,24 @@ dfc_processing(struct dp_netdev_pmd_thread *pmd,
 
         if (!md_is_valid) {
             pkt_metadata_init(&packet->md, port_no);
-        }
 
-        if ((*recirc_depth_get() == 0) &&
-            dp_packet_has_flow_mark(packet, &mark)) {
-            flow = mark_to_flow_find(pmd, mark);
-            if (OVS_LIKELY(flow)) {
-                tcp_flags = parse_tcp_flags(packet);
+            if (dp_netdev_direct_output_enabled(pmd, port_no)) {
+                ovs_be16 dl_type;
+                uint8_t nw_frag;
+
+                tcp_flags = parse_tcp_flags(packet, &dl_type, &nw_frag);
+                flow = dp_netdev_direct_output_lookup(pmd, port_no,
+                                                      dl_type, nw_frag);
+                VLOG_INFO("Lookup in direct output table %s.",
+                          flow ? "succedded" : "failed");
+            } else if (dp_packet_has_flow_mark(packet, &mark)) {
+                flow = mark_to_flow_find(pmd, mark);
+                if (OVS_LIKELY(flow)) {
+                    tcp_flags = parse_tcp_flags(packet, NULL, NULL);
+                }
+            }
+
+            if (flow) {
                 if (OVS_LIKELY(batch_enable)) {
                     dp_netdev_queue_batches(packet, flow, tcp_flags, batches,
                                             n_batches);
@@ -6601,6 +6802,7 @@ handle_packet_upcall(struct dp_netdev_pmd_thread *pmd,
     ovs_u128 ufid;
     int error;
     uint64_t cycles = cycles_counter_update(&pmd->perf_stats);
+    bool vlan_tci_wc_faked = false;
 
     match.tun_md.valid = false;
     miniflow_expand(&key->mf, &match.flow);
@@ -6625,6 +6827,7 @@ handle_packet_upcall(struct dp_netdev_pmd_thread *pmd,
      * here.  This must be in sync with 'match' in dpif_netdev_flow_put(). */
     if (!match.wc.masks.vlans[0].tci) {
         match.wc.masks.vlans[0].tci = htons(0xffff);
+        vlan_tci_wc_faked = true;
     }
 
     /* We can't allow the packet batching in the next loop to execute
@@ -6648,7 +6851,8 @@ handle_packet_upcall(struct dp_netdev_pmd_thread *pmd,
         if (OVS_LIKELY(!netdev_flow)) {
             netdev_flow = dp_netdev_flow_add(pmd, &match, &ufid,
                                              add_actions->data,
-                                             add_actions->size);
+                                             add_actions->size,
+                                             vlan_tci_wc_faked);
         }
         ovs_mutex_unlock(&pmd->flow_mutex);
         uint32_t hash = dp_netdev_flow_hash(&netdev_flow->ufid);
