@@ -12,7 +12,6 @@ noinst_HEADERS += \
         include/sparse/bits/floatn.h \
         include/sparse/assert.h \
         include/sparse/bmi2intrin.h \
-        include/sparse/emmintrin.h \
         include/sparse/math.h \
         include/sparse/netinet/in.h \
         include/sparse/netinet/ip6.h \
