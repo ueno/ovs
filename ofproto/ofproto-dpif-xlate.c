@@ -34,6 +34,7 @@
 #include "csum.h"
 #include "dp-packet.h"
 #include "dpif.h"
+#include "hmapx.h"
 #include "in-band.h"
 #include "lacp.h"
 #include "learn.h"
@@ -544,7 +545,7 @@ static void xlate_table_action(struct xlate_ctx *, ofp_port_t in_port,
                                bool is_last_action, xlate_actions_handler *);
 
 static bool input_vid_is_valid(const struct xlate_ctx *,
-                               uint16_t vid, struct xbundle *);
+                               uint16_t vid, const struct xbundle *);
 static void xvlan_copy(struct xvlan *dst, const struct xvlan *src);
 static void xvlan_pop(struct xvlan *src);
 static void xvlan_push_uninit(struct xvlan *src);
@@ -2184,7 +2185,7 @@ mirror_ingress_packet(struct xlate_ctx *ctx)
  * 0...4095. */
 static bool
 input_vid_is_valid(const struct xlate_ctx *ctx,
-                   uint16_t vid, struct xbundle *in_xbundle)
+                   uint16_t vid, const struct xbundle *in_xbundle)
 {
     /* Allow any VID on the OFPP_NONE port. */
     if (in_xbundle == &ofpp_none_bundle) {
@@ -2557,7 +2558,8 @@ is_admissible(struct xlate_ctx *ctx, struct xport *in_port,
 
 static bool
 update_learning_table__(const struct xbridge *xbridge,
-                        struct xbundle *in_xbundle, struct eth_addr dl_src,
+                        const struct xbundle *in_xbundle,
+                        struct eth_addr dl_src,
                         int vlan, bool is_grat_arp)
 {
     return (in_xbundle == &ofpp_none_bundle
@@ -2568,16 +2570,66 @@ update_learning_table__(const struct xbridge *xbridge,
 }
 
 static void
-update_learning_table(const struct xlate_ctx *ctx,
-                      struct xbundle *in_xbundle, struct eth_addr dl_src,
-                      int vlan, bool is_grat_arp)
+update_learning_table_with_flood(struct xlate_ctx *ctx,
+                                 const struct xbundle *in_xbundle,
+                                 struct eth_addr dl_src,
+                                 const struct xvlan *xvlan, bool is_grat_arp,
+                                 struct hmapx *updated_bridges)
 {
+    struct xport *xport;
+    int vlan = xvlan->v[0].vid;
+
+    /* Prevent updating the same bridge twice. */
+    hmapx_add(updated_bridges, CONST_CAST(void *, ctx->xbridge));
+
+    /* Flooding the mac updates through the peers. */
+    HMAP_FOR_EACH (xport, ofp_node, &ctx->xbridge->xports) {
+        if (xport->peer
+            && !hmapx_contains(updated_bridges, xport->peer->xbridge)
+            && xport->xbundle
+            && xport->xbundle != in_xbundle
+            && xport->xbundle->ofbundle != in_xbundle->ofbundle
+            && xbundle_includes_vlan(xport->xbundle, xvlan)
+            && xport->xbundle->floodable
+            && !xbundle_mirror_out(ctx->xbridge, xport->xbundle)) {
+
+            const struct xbridge *xbridge_orig = ctx->xbridge;
+            const struct xbundle *peer_xbundle = xport->peer->xbundle;
+            struct xvlan out_xvlan, peer_xvlan;
+
+            xvlan_output_translate(xport->xbundle, xvlan, &out_xvlan);
+            if (!input_vid_is_valid(ctx, out_xvlan.v[0].vid, peer_xbundle)) {
+                continue;
+            }
+            xvlan_input_translate(peer_xbundle, &out_xvlan, &peer_xvlan);
+
+            ctx->xbridge = xport->peer->xbridge;
+            update_learning_table_with_flood(ctx, peer_xbundle, dl_src,
+                                             &peer_xvlan, is_grat_arp,
+                                             updated_bridges);
+            ctx->xbridge = xbridge_orig;
+        }
+    }
+
+    /* Update the current bridge. */
     if (!update_learning_table__(ctx->xbridge, in_xbundle, dl_src, vlan,
                                  is_grat_arp)) {
         xlate_report_debug(ctx, OFT_DETAIL, "learned that "ETH_ADDR_FMT" is "
                            "on port %s in VLAN %d",
                            ETH_ADDR_ARGS(dl_src), in_xbundle->name, vlan);
     }
+}
+
+static void
+update_learning_table(struct xlate_ctx *ctx,
+                      const struct xbundle *in_xbundle, struct eth_addr dl_src,
+                      const struct xvlan *xvlan, bool is_grat_arp)
+{
+    struct hmapx updated_bridges = HMAPX_INITIALIZER(&updated_bridges);
+
+    update_learning_table_with_flood(ctx, in_xbundle, dl_src, xvlan,
+                                     is_grat_arp, &updated_bridges);
+    hmapx_destroy(&updated_bridges);
 }
 
 /* Updates multicast snooping table 'ms' given that a packet matching 'flow'
@@ -2987,7 +3039,7 @@ xlate_normal(struct xlate_ctx *ctx)
         && flow->packet_type == htonl(PT_ETH)
         && in_port->pt_mode != NETDEV_PT_LEGACY_L3
     ) {
-        update_learning_table(ctx, in_xbundle, flow->dl_src, vlan,
+        update_learning_table(ctx, in_xbundle, flow->dl_src, &xvlan,
                               is_grat_arp);
     }
     if (ctx->xin->xcache && in_xbundle != &ofpp_none_bundle) {
