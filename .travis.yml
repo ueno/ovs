@@ -27,6 +27,7 @@ before_install: ./.travis/${TRAVIS_OS_NAME}-prepare.sh
 before_script: export PATH=$PATH:$HOME/bin
 
 env:
+  - DPDK=1 DPDK_GIT="https://dpdk.org/git/dpdk-stable" DPDK_VER="refs/heads/18.11"
   - OPTS="--disable-ssl"
   - TESTSUITE=1 KERNEL=3.16
   - TESTSUITE=1 OPTS="--enable-shared"
