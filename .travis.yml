@@ -27,28 +27,7 @@ before_install: ./.travis/${TRAVIS_OS_NAME}-prepare.sh
 before_script: export PATH=$PATH:$HOME/bin
 
 env:
-  - DPDK=1 DPDK_GIT="https://dpdk.org/git/dpdk-stable" DPDK_VER="refs/heads/18.11"
-  - OPTS="--disable-ssl"
-  - TESTSUITE=1 KERNEL=3.16
-  - TESTSUITE=1 OPTS="--enable-shared"
-  - BUILD_ENV="-m32" OPTS="--disable-ssl"
-  - DPDK=1 OPTS="--enable-shared"
-  - TESTSUITE=1 DPDK=1
-  - DPDK_SHARED=1
-  - DPDK_SHARED=1 OPTS="--enable-shared"
-  - KERNEL=5.0
-  - KERNEL=4.20
-  - KERNEL=4.19
-  - KERNEL=4.18
-  - KERNEL=4.17
-  - KERNEL=4.16
-  - KERNEL=4.15
-  - KERNEL=4.14
-  - KERNEL=4.9
-  - KERNEL=4.4
-  - KERNEL=3.19
-  - KERNEL=3.16
-  - TESTSUITE=1 LIBS=-ljemalloc
+  - DPDK=1 DPDK_VER="refs/heads/master"
 
 matrix:
   include:
