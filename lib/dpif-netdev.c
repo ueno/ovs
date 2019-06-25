@@ -335,9 +335,6 @@ struct dp_netdev {
     /* The time that a packet can wait in output batch for sending. */
     atomic_uint32_t tx_flush_interval;
 
-    /* Count of pmds currently reloading */
-    atomic_uint32_t reloading_pmds;
-
     /* Meters. */
     struct ovs_mutex meter_locks[N_METER_LOCKS];
     struct dp_meter *meters[MAX_METERS]; /* Meter bands. */
@@ -683,10 +680,49 @@ struct dp_netdev_pmd_thread {
 
     struct seq *reload_seq;
     uint64_t last_reload_seq;
+
+    /* These are atomic variables used as as synchronization and configuration
+     * points for thread reload/exit.
+     *
+     * 'reload' atomic is the main one and it's used as a memory
+     * synchronization point for all other knobs and data.
+     *
+     * For the thread that requests PMD reload:
+     *
+     *   * All the changes that needs to be visible by PMD thread must be
+     *     done before setting the 'reload'.  These changes could use any
+     *     memory ordering model including 'relaxed'.
+     *   * Setting the 'reload' atomic should happen in the same thread where
+     *     all other PMD configuration updated.
+     *   * Setting the 'reload' atomic should be done with 'release' memory
+     *     ordering model or stricter.  This will guarantee that all previous
+     *     changes (including non-atomic and 'relaxed') will be visible by
+     *     the PMD thread.
+     *   * To check that reload is done, thread should poll the 'reload'
+     *     atomic to become 'false'.  Polling should be done with 'acquire'
+     *     memory ordering model or stricter.  This will guarantee that
+     *     PMD thread finished the reload process.
+     *
+     * For the PMD thread:
+     *
+     *   * PMD thread should read 'reload' atomic with 'acquire' memory
+     *     ordering model or stricter.  This will guarantee that all changes
+     *     done before setting the 'reload' in a requesting thread will be
+     *     visible by the PMD thread.
+     *   * All other configuration data could be read with any memory
+     *     ordering model (including 'relaxed'), but *only after* reading the
+     *     'reload' atomic set to 'true'.
+     *   * When the PMD reload done, PMD should (optionally) set all the
+     *     below knobs except the 'reload' to their default ('false') values
+     *     and (mandatory), as the last step, set the 'reload' to 'false'
+     *     using 'release' memory ordering model or stricter.  This will
+     *     signal to the requesting thread that PMD finished reload cycle.
+     */
     atomic_bool reload;             /* Do we need to reload ports? */
     atomic_bool wait_for_reload;    /* Can we busy wait for the next reload? */
     atomic_bool reload_tx_qid;      /* Do we need to reload static_tx_qid? */
     atomic_bool exit;               /* For terminating the pmd thread. */
+
     pthread_t thread;
     unsigned core_id;               /* CPU core id of this pmd thread. */
     int numa_id;                    /* numa node id of this pmd thread. */
@@ -1526,8 +1562,6 @@ create_dp_netdev(const char *name, const struct dpif_class *class,
 
     atomic_init(&dp->emc_insert_min, DEFAULT_EM_FLOW_INSERT_MIN);
     atomic_init(&dp->tx_flush_interval, DEFAULT_TX_FLUSH_INTERVAL);
-
-    atomic_init(&dp->reloading_pmds, 0);
 
     cmap_init(&dp->poll_threads);
     dp->pmd_rxq_assign_cyc = true;
@@ -4644,42 +4678,32 @@ rxq_scheduling(struct dp_netdev *dp, bool pinned) OVS_REQUIRES(dp->port_mutex)
 }
 
 static void
-wait_reloading_pmds(struct dp_netdev *dp)
+wait_reloading_pmd(struct dp_netdev_pmd_thread *pmd)
 {
-    uint32_t reloading;
+    bool reload;
 
     do {
-        atomic_read_explicit(&dp->reloading_pmds, &reloading,
-                             memory_order_acquire);
-    } while (reloading != 0);
+        atomic_read_explicit(&pmd->reload, &reload, memory_order_acquire);
+    } while (reload);
 }
 
 static void
 reload_affected_pmds(struct dp_netdev *dp)
 {
     struct dp_netdev_pmd_thread *pmd;
-    unsigned int pmd_count = 0;
-
-    CMAP_FOR_EACH (pmd, node, &dp->poll_threads) {
-        if (pmd->core_id == NON_PMD_CORE_ID) {
-            continue;
-        }
-        if (pmd->need_reload) {
-            pmd_count++;
-        }
-    }
-    atomic_store_relaxed(&dp->reloading_pmds, pmd_count);
 
     CMAP_FOR_EACH (pmd, node, &dp->poll_threads) {
         if (pmd->need_reload) {
             flow_mark_flush(pmd);
             dp_netdev_reload_pmd__(pmd);
-            pmd->need_reload = false;
         }
     }
 
-    if (pmd_count != 0) {
-        wait_reloading_pmds(dp);
+    CMAP_FOR_EACH (pmd, node, &dp->poll_threads) {
+        if (pmd->need_reload) {
+            wait_reloading_pmd(pmd);
+            pmd->need_reload = false;
+        }
     }
 }
 
@@ -4810,6 +4834,7 @@ reconfigure_datapath(struct dp_netdev *dp)
 {
     struct dp_netdev_pmd_thread *pmd;
     struct dp_netdev_port *port;
+    struct hmapx busy_threads = HMAPX_INITIALIZER(&busy_threads);
     int wanted_txqs;
 
     dp->last_reconfigure_seq = seq_read(dp->reconfigure_seq);
@@ -4895,6 +4920,20 @@ reconfigure_datapath(struct dp_netdev *dp)
     rxq_scheduling(dp, false);
 
     /* Step 5: Remove queues not compliant with new scheduling. */
+
+    /* Count all the threads that will have at least one queue to poll. */
+    HMAP_FOR_EACH (port, node, &dp->ports) {
+        for (int qid = 0; qid < port->n_rxq; qid++) {
+            struct dp_netdev_rxq *q = &port->rxqs[qid];
+
+            if (q->pmd) {
+                hmapx_add(&busy_threads, q->pmd);
+            }
+        }
+    }
+
+    /* Remove queues not compliant with new scheduling.  Asking busy threads
+     * to busy-wait for a new queue assignment. */
     CMAP_FOR_EACH (pmd, node, &dp->poll_threads) {
         struct rxq_poll *poll, *poll_next;
 
@@ -4903,36 +4942,19 @@ reconfigure_datapath(struct dp_netdev *dp)
             if (poll->rxq->pmd != pmd) {
                 dp_netdev_del_rxq_from_pmd(pmd, poll);
 
-                /* This pmd might sleep after this step reload if it has no
-                 * rxq remaining. Can we tell it to busy wait for new rxq at
-                 * Step 6 ? */
-                if (hmap_count(&pmd->poll_list) == 0) {
-                    HMAP_FOR_EACH (port, node, &dp->ports) {
-                        int qid;
-
-                        if (!netdev_is_pmd(port->netdev)) {
-                            continue;
-                        }
-
-                        for (qid = 0; qid < port->n_rxq; qid++) {
-                            struct dp_netdev_rxq *q = &port->rxqs[qid];
-
-                            if (q->pmd == pmd) {
-                                atomic_store_relaxed(&q->pmd->wait_for_reload,
-                                                     true);
-                                break;
-                            }
-                        }
-
-                        if (qid != port->n_rxq) {
-                            break;
-                        }
-                    }
+                /* This thread might sleep after this step if it has no rxq
+                 * remaining.  Tell it to busy wait for a new assignment
+                 * if it has at least one scheduled queue. */
+                if (hmap_count(&pmd->poll_list) == 0
+                    && hmapx_contains(&busy_threads, pmd)) {
+                    atomic_store_relaxed(&pmd->wait_for_reload, true);
                 }
             }
         }
         ovs_mutex_unlock(&pmd->port_mutex);
     }
+
+    hmapx_destroy(&busy_threads);
 
     /* Reload affected pmd threads.  We must wait for the pmd threads to remove
      * the old queues before readding them, otherwise a queue can be polled by
@@ -5885,14 +5907,10 @@ dpif_netdev_enable_upcall(struct dpif *dpif)
 static void
 dp_netdev_pmd_reload_done(struct dp_netdev_pmd_thread *pmd)
 {
-    uint32_t old;
-
     atomic_store_relaxed(&pmd->wait_for_reload, false);
     atomic_store_relaxed(&pmd->reload_tx_qid, false);
-    atomic_store_relaxed(&pmd->reload, false);
     pmd->last_reload_seq = seq_read(pmd->reload_seq);
-    atomic_sub_explicit(&pmd->dp->reloading_pmds, 1, &old,
-                        memory_order_release);
+    atomic_store_explicit(&pmd->reload, false, memory_order_release);
 }
 
 /* Finds and refs the dp_netdev_pmd_thread on core 'core_id'.  Returns
@@ -6038,9 +6056,8 @@ dp_netdev_del_pmd(struct dp_netdev *dp, struct dp_netdev_pmd_thread *pmd)
         ovs_mutex_unlock(&dp->non_pmd_mutex);
     } else {
         atomic_store_relaxed(&pmd->exit, true);
-        atomic_store_relaxed(&dp->reloading_pmds, 1);
         dp_netdev_reload_pmd__(pmd);
-        wait_reloading_pmds(dp);
+        wait_reloading_pmd(pmd);
         xpthread_join(pmd->thread, NULL);
     }
 
