@@ -43,21 +43,27 @@ uint64_t iter_cycle_threshold;
 
 static struct vlog_rate_limit latency_rl = VLOG_RATE_LIMIT_INIT(600, 600);
 
+static uint64_t tsc_hz = 1E9;
+
+static void
+estimate_tsc_frequency(struct pmd_perf_stats *s)
+{
 #ifdef DPDK_NETDEV
-static uint64_t
-get_tsc_hz(void)
-{
-    return rte_get_tsc_hz();
-}
+    tsc_hz = rte_get_tsc_hz();
+#elif !defined(_MSC_VER) && defined(__x86_64__)
+    uint64_t start, stop;
+
+    start = cycles_counter_update(s);
+    xsleep(1);
+    stop = cycles_counter_update(s);
+    tsc_hz = stop - start;
+#elif defined(__linux__)
+    tsc_hz = 1E9;
 #else
-/* This function is only invoked from PMD threads which depend on DPDK.
- * A dummy function is sufficient when building without DPDK_NETDEV. */
-static uint64_t
-get_tsc_hz(void)
-{
-    return 1;
-}
+    tsc_hz = 1;
 #endif
+    VLOG_INFO("Estimated TSC frequency: %"PRIu64" KHz", tsc_hz / 1000);
+}
 
 /* Histogram functions. */
 
@@ -134,6 +140,13 @@ history_init(struct history *h)
 void
 pmd_perf_stats_init(struct pmd_perf_stats *s)
 {
+    static struct ovsthread_once tsc_freq_check = OVSTHREAD_ONCE_INITIALIZER;
+
+    if (ovsthread_once_start(&tsc_freq_check)) {
+        estimate_tsc_frequency(s);
+        ovsthread_once_done(&tsc_freq_check);
+    }
+
     memset(s, 0, sizeof(*s));
     ovs_mutex_init(&s->stats_mutex);
     ovs_mutex_init(&s->clear_mutex);
@@ -170,7 +183,6 @@ pmd_perf_format_overall_stats(struct ds *str, struct pmd_perf_stats *s,
                               double duration)
 {
     uint64_t stats[PMD_N_STATS];
-    uint64_t tsc_hz = get_tsc_hz();
     double us_per_cycle = 1000000.0 / tsc_hz;
 
     if (duration == 0) {
@@ -555,7 +567,7 @@ pmd_perf_end_iteration(struct pmd_perf_stats *s, int rx_packets,
             cum_ms->timestamp = now;
         }
         /* Do the next check after 4 us (10K cycles at 2.5 GHz TSC clock). */
-        s->next_check_tsc = cycles_counter_update(s) + get_tsc_hz() / 250000;
+        s->next_check_tsc = cycles_counter_update(s) + tsc_hz / 250000;
     }
 }
 
@@ -585,7 +597,7 @@ pmd_perf_set_log_susp_iteration(struct pmd_perf_stats *s,
                 " duration=%"PRIu64" us\n",
                 s->log_reason,
                 susp->timestamp,
-                (1000000L * susp->cycles) / get_tsc_hz());
+                (1000000L * susp->cycles) / tsc_hz);
 
         new_end_it = history_add(s->iterations.idx, log_it_after + 1);
         new_range = history_sub(new_end_it, s->log_begin_it);
@@ -615,7 +627,7 @@ pmd_perf_log_susp_iteration_neighborhood(struct pmd_perf_stats *s)
                  " duration=%"PRIu64" us\n",
                  s->log_reason,
                  susp->timestamp,
-                 (1000000L * susp->cycles) / get_tsc_hz());
+                 (1000000L * susp->cycles) / tsc_hz);
 
     pmd_perf_format_iteration_history(&log, s, range);
     VLOG_WARN_RL(&latency_rl,
@@ -729,7 +741,7 @@ pmd_perf_log_set_cmd(struct unixctl_conn *conn,
     log_it_after = it_after;
     log_q_thr = q_thr;
     log_us_thr = us_thr;
-    iter_cycle_threshold = (log_us_thr * get_tsc_hz()) / 1000000L;
+    iter_cycle_threshold = (log_us_thr * tsc_hz) / 1000000L;
 
     unixctl_command_reply(conn, "");
 }
