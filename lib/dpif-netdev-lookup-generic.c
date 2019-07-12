@@ -31,6 +31,9 @@
 
 VLOG_DEFINE_THIS_MODULE(dpif_lookup_generic);
 
+/* Lookup functions below depends on the internal structure of a flowmap. */
+BUILD_ASSERT_DECL(FLOWMAP_UNITS == 2);
+
 /* netdev_flow_key_flatten_unit:
  * Given a packet, table and mf_masks, this function iterates over each bit
  * set in the subtable, and calculates the appropriate metadata to store in the
@@ -129,8 +132,8 @@ netdev_rule_matches_key(const struct dpcls_rule *rule,
 {
     const uint64_t *keyp = miniflow_get_values(&rule->flow.mf);
     const uint64_t *maskp = miniflow_get_values(&rule->mask->mf);
-
     uint64_t not_match = 0;
+
     for (int i = 0; i < mf_bits_total; i++) {
         not_match |= (blocks_scratch[i] & maskp[i]) != keyp[i];
     }
@@ -163,7 +166,7 @@ lookup_generic_impl(struct dpcls_subtable *subtable,
     int i;
 
     /* Flatten the packet metadata into the blocks_scratch[] using subtable */
-    ULLONG_FOR_EACH_1(i, keys_map) {
+    ULLONG_FOR_EACH_1 (i, keys_map) {
             netdev_flow_key_flatten(keys[i],
                                     &subtable->mask,
                                     mf_masks,
@@ -173,9 +176,10 @@ lookup_generic_impl(struct dpcls_subtable *subtable,
     }
 
     /* Hash the now linearized blocks of packet metadata */
-    ULLONG_FOR_EACH_1(i, keys_map) {
+    ULLONG_FOR_EACH_1 (i, keys_map) {
          uint32_t hash = 0;
          uint32_t i_off = i * bit_count_total;
+
          for (int h = 0; h < bit_count_total; h++) {
              hash = hash_add64(hash, blocks_scratch[i_off + h]);
          }
@@ -188,12 +192,13 @@ lookup_generic_impl(struct dpcls_subtable *subtable,
      */
     uint32_t found_map;
     const struct cmap_node *nodes[NETDEV_MAX_BURST];
+
     found_map = cmap_find_batch(&subtable->rules, keys_map, hashes, nodes);
 
     /* Verify that packet actually matched rule. If not found, a hash
      * collision has taken place, so continue searching with the next node.
      */
-    ULLONG_FOR_EACH_1(i, found_map) {
+    ULLONG_FOR_EACH_1 (i, found_map) {
         struct dpcls_rule *rule;
 
         CMAP_NODE_FOR_EACH (rule, cmap_node, nodes[i]) {
@@ -236,41 +241,25 @@ dpcls_subtable_lookup_generic(struct dpcls_subtable *subtable,
                                subtable->mf_bits_set_unit1);
 }
 
-static uint32_t
-dpcls_subtable_lookup_mf_u0w5_u1w1(struct dpcls_subtable *subtable,
-                                   uint64_t *blocks_scratch,
-                                   uint32_t keys_map,
-                                   const struct netdev_flow_key *keys[],
-                                   struct dpcls_rule **rules)
-{
-    /* hard coded bit counts - enables compile time loop unrolling, and
-     * generating of optimized code-sequences due to loop unrolled code.
-     */
-    return lookup_generic_impl(subtable, blocks_scratch, keys_map, keys, rules,
-                               5, 1);
-}
+#define DECLARE_OPTIMIZED_LOOKUP_FUNCTION(U0, U1)                             \
+    static uint32_t                                                           \
+    dpcls_subtable_lookup_mf_u0w##U0##_u1w##U1(                               \
+                                         struct dpcls_subtable *subtable,     \
+                                         uint64_t *blocks_scratch,            \
+                                         uint32_t keys_map,                   \
+                                         const struct netdev_flow_key *keys[],\
+                                         struct dpcls_rule **rules)           \
+    {                                                                         \
+        /* Hard coded bit counts - enables compile time loop unrolling, and   \
+         * generating of optimized code-sequences due to loop unrolled code.  \
+         */                                                                   \
+        return lookup_generic_impl(subtable, blocks_scratch, keys_map,        \
+                                   keys, rules, U0, U1);                      \
+    }                                                                         \
 
-static uint32_t
-dpcls_subtable_lookup_mf_u0w4_u1w1(struct dpcls_subtable *subtable,
-                                   uint64_t *blocks_scratch,
-                                   uint32_t keys_map,
-                                   const struct netdev_flow_key *keys[],
-                                   struct dpcls_rule **rules)
-{
-    return lookup_generic_impl(subtable, blocks_scratch, keys_map, keys, rules,
-                               4, 1);
-}
-
-static uint32_t
-dpcls_subtable_lookup_mf_u0w4_u1w0(struct dpcls_subtable *subtable,
-                                   uint64_t *blocks_scratch,
-                                   uint32_t keys_map,
-                                   const struct netdev_flow_key *keys[],
-                                   struct dpcls_rule **rules)
-{
-    return lookup_generic_impl(subtable, blocks_scratch, keys_map, keys, rules,
-                               4, 0);
-}
+DECLARE_OPTIMIZED_LOOKUP_FUNCTION(5, 1);
+DECLARE_OPTIMIZED_LOOKUP_FUNCTION(4, 1);
+DECLARE_OPTIMIZED_LOOKUP_FUNCTION(4, 0);
 
 /* Probe function to lookup an available specialized function.
  * If capable to run the requested miniflow fingerprint, this function returns
@@ -283,13 +272,14 @@ dpcls_subtable_generic_probe(uint32_t u0_bits, uint32_t u1_bits)
 {
     dpcls_subtable_lookup_func f = NULL;
 
-    if (u0_bits == 5 && u1_bits == 1) {
-        f = dpcls_subtable_lookup_mf_u0w5_u1w1;
-    } else if (u0_bits == 4 && u1_bits == 1) {
-        f = dpcls_subtable_lookup_mf_u0w4_u1w1;
-    } else if (u0_bits == 4 && u1_bits == 0) {
-        f = dpcls_subtable_lookup_mf_u0w4_u1w0;
+#define CHECK_LOOKUP_FUNCTION(U0, U1)                      \
+    if (!f && u0_bits == U0 && u1_bits == U1) {            \
+        f = dpcls_subtable_lookup_mf_u0w##U0##_u1w##U1;    \
     }
+
+    CHECK_LOOKUP_FUNCTION(5, 1);
+    CHECK_LOOKUP_FUNCTION(4, 1);
+    CHECK_LOOKUP_FUNCTION(4, 0);
 
     if (f) {
         VLOG_INFO("Subtable using Generic Optimized for u0 %d, u1 %d\n",
