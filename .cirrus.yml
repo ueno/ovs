@@ -9,13 +9,16 @@ freebsd_build_task:
 
   env:
     DEPENDENCIES: automake libtool gmake gcc wget openssl
-                  python3 py36-six py36-openssl py36-sphinx
+                  python3 py3-six py3-openssl py3-sphinx
     matrix:
       COMPILER: gcc
       COMPILER: clang
 
   prepare_script:
     - sysctl -w kern.coredump=0
+    - pkg update
+    - pkg info | grep py3
+    - pkg info | grep six
     - pkg install -y ${DEPENDENCIES}
 
   configure_script:
