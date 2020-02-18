@@ -257,6 +257,38 @@ ovsdb_atom_compare_3way(const union ovsdb_atom *a,
     }
 }
 
+/* Compares for equality 'a' and 'b', which both have type 'type'. */
+bool
+ovsdb_atom_equals(const union ovsdb_atom *a,
+                  const union ovsdb_atom *b,
+                  enum ovsdb_atomic_type type)
+{
+    switch (type) {
+    case OVSDB_TYPE_VOID:
+        OVS_NOT_REACHED();
+
+    case OVSDB_TYPE_INTEGER:
+        return a->integer == b->integer;
+
+    case OVSDB_TYPE_REAL:
+        return a->real == b->real;
+
+    case OVSDB_TYPE_BOOLEAN:
+        return a->boolean == b->boolean;
+
+    case OVSDB_TYPE_STRING:
+        return !strcmp(a->string, b->string);
+
+    case OVSDB_TYPE_UUID:
+        return uuid_equals(&a->uuid, &b->uuid);
+
+    case OVSDB_N_TYPES:
+    default:
+        OVS_NOT_REACHED();
+    }
+}
+
+
 static struct ovsdb_error *
 unwrap_json(const struct json *json, const char *name,
             enum json_type value_type, const struct json **value)
@@ -1734,6 +1766,41 @@ ovsdb_datum_hash(const struct ovsdb_datum *datum,
 }
 
 static int
+atom_arrays_equals(const union ovsdb_atom *a,
+                   const union ovsdb_atom *b,
+                   enum ovsdb_atomic_type type,
+                   size_t n)
+{
+    unsigned int i;
+
+    for (i = 0; i < n; i++) {
+        if (!ovsdb_atom_equals(&a[i], &b[i], type)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool
+ovsdb_datum_equals(const struct ovsdb_datum *a,
+                   const struct ovsdb_datum *b,
+                   const struct ovsdb_type *type)
+{
+    if (a->n != b->n) {
+        return false;
+    }
+
+    if (!atom_arrays_equals(a->keys, b->keys, type->key.type, a->n)) {
+        return false;
+    }
+
+    return (type->value.type == OVSDB_TYPE_VOID ? true
+            : atom_arrays_equals(a->values, b->values, type->value.type,
+                                 a->n));
+}
+
+static int
 atom_arrays_compare_3way(const union ovsdb_atom *a,
                          const union ovsdb_atom *b,
                          enum ovsdb_atomic_type type,
@@ -1749,14 +1816,6 @@ atom_arrays_compare_3way(const union ovsdb_atom *a,
     }
 
     return 0;
-}
-
-bool
-ovsdb_datum_equals(const struct ovsdb_datum *a,
-                   const struct ovsdb_datum *b,
-                   const struct ovsdb_type *type)
-{
-    return !ovsdb_datum_compare_3way(a, b, type);
 }
 
 int

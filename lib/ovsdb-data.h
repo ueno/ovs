@@ -80,12 +80,9 @@ int ovsdb_atom_compare_3way(const union ovsdb_atom *,
 
 /* Returns true if 'a' and 'b', which are both of type 'type', has the same
  * contents, false if their contents differ.  */
-static inline bool ovsdb_atom_equals(const union ovsdb_atom *a,
-                                     const union ovsdb_atom *b,
-                                     enum ovsdb_atomic_type type)
-{
-    return !ovsdb_atom_compare_3way(a, b, type);
-}
+bool ovsdb_atom_equals(const union ovsdb_atom *a,
+                       const union ovsdb_atom *b,
+                       enum ovsdb_atomic_type type);
 
 struct ovsdb_error *ovsdb_atom_from_json(union ovsdb_atom *,
                                          const struct ovsdb_base_type *,
