@@ -11,11 +11,8 @@ jobs:
         ninja-build python3-openssl python3-pip                 \
         python3-setuptools python3-sphinx python3-wheel         \
         selinux-policy-dev
-      deb_dependencies: |
-        linux-headers-$(uname -r) build-essential fakeroot devscripts equivs
       AFXDP:       ${{ matrix.afxdp }}
       CC:          ${{ matrix.compiler }}
-      DEB_PACKAGE: ${{ matrix.deb_package }}
       DPDK:        ${{ matrix.dpdk }}
       DPDK_SHARED: ${{ matrix.dpdk_shared }}
       KERNEL:      ${{ matrix.kernel }}
@@ -106,9 +103,6 @@ jobs:
             m32:          m32
             opts:         --disable-ssl
 
-          - compiler:     gcc
-            deb_package:  deb
-
     steps:
     - name: checkout
       uses: actions/checkout@v2
@@ -134,11 +128,7 @@ jobs:
         key:  ${{ env.matrix_key }}-${{ env.ci_key }}
 
     - name: install common dependencies
-      if:   matrix.deb_package == ''
       run:  sudo apt install -y ${{ env.dependencies }}
-    - name: install dependencies for debian packages
-      if:   matrix.deb_package != ''
-      run:  sudo apt install -y ${{ env.deb_dependencies }}
     - name: install libunbound libunwind
       if:   matrix.m32 == ''
       run:  sudo apt install -y libunbound-dev libunwind-dev
@@ -148,13 +138,6 @@ jobs:
 
     - name: build
       run:  PATH="$PATH:$HOME/bin:$HOME/.local/bin" ./.ci/linux-build.sh
-
-    - name: upload deb packages
-      if:   matrix.deb_package != ''
-      uses: actions/upload-artifact@v2
-      with:
-        name: deb-packages
-        path: '/home/runner/work/ovs/*.deb'
 
     - name: copy logs on failure
       if: failure() || cancelled()

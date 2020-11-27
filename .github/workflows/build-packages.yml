@@ -3,6 +3,51 @@ name: Build Packages
 on: [push, pull_request]
 
 jobs:
+  build-deb-ubuntu:
+    name: linux build ubuntu deb
+    runs-on: ubuntu-20.04
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+
+    steps:
+    - name: checkout
+      uses: actions/checkout@v2
+    - name: install dependencies
+      run: |
+        sudo apt install -y linux-headers-$(uname -r) build-essential \
+                            fakeroot devscripts equivs
+        mk-build-deps --install --root-cmd sudo --remove debian/control
+        dpkg-checkbuilddeps
+
+    - name: configure
+      run:  ./boot.sh && ./configure
+    - name: build deb packages
+      env:
+        DEB_BUILD_OPTIONS:  'parallel=4 nocheck'
+      run:  fakeroot debian/rules binary
+    - name: try to install built packages
+      run: |
+        # Not trying to install ipsec package as there are issues with
+        # system-wide installed python3-openvswitch package and the pyenv.
+        packages=$(ls $(pwd)/../*.deb | grep -v ipsec)
+        sudo apt install ${packages}
+
+    - name: upload deb packages
+      uses: actions/upload-artifact@v2
+      with:
+        name: deb-packages
+        path: '/home/runner/work/ovs/*.deb'
+
+    - name: upload logs on failure
+      if:   failure()
+      uses: actions/upload-artifact@v2
+      with:
+        name: logs-deb-ubuntu
+        path: config.log
+
+
   build-rpm-fedora:
     name: linux build fedora rpm
     runs-on: ubuntu-20.04
