@@ -41,6 +41,7 @@
 #include "openvswitch/poll-loop.h"
 #include "openvswitch/shash.h"
 #include "skiplist.h"
+#include "simap.h"
 #include "sset.h"
 #include "svec.h"
 #include "util.h"
@@ -957,6 +958,39 @@ ovsdb_idl_wait(struct ovsdb_idl *idl)
     }
     jsonrpc_session_wait(idl->session);
     jsonrpc_session_recv_wait(idl->session);
+}
+
+/* Returns statistics for idl database objects. */
+static void
+ovsdb_idl_db_get_memory_usage(struct ovsdb_idl_db *db, struct simap *usage)
+{
+    unsigned int cells = 0;
+
+    for (size_t i = 0; i < db->class_->n_tables; i++) {
+        struct ovsdb_idl_table *table = &db->tables[i];
+        unsigned int n_columns = shash_count(&table->columns);
+        unsigned int n_rows = hmap_count(&table->rows);
+
+        cells += n_rows * n_columns;
+    }
+
+    simap_increase(usage, "idl-cells", cells);
+    simap_increase(usage, "idl-outstanding-txns",
+                   hmap_count(&db->outstanding_txns));
+}
+
+/* Returns memory usage statistics. */
+void
+ovsdb_idl_get_memory_usage(struct ovsdb_idl *idl, struct simap *usage)
+{
+    if (idl) {
+        ovsdb_idl_db_get_memory_usage(&idl->server, usage);
+        ovsdb_idl_db_get_memory_usage(&idl->data, usage);
+
+        if (idl->session) {
+            simap_increase(usage, "idl-sessions", 1);
+        }
+    }
 }
 
 /* Returns a "sequence number" that represents the state of 'idl'.  When
