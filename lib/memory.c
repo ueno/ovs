@@ -82,6 +82,12 @@ memory_run(void)
                   ((double) usage.ru_maxrss / last_reported_maxrss - 1) * 100,
                   (now - last_report) / 1000.0,
                   last_reported_maxrss, (unsigned long int) usage.ru_maxrss);
+    } else if (usage.ru_maxrss < last_reported_maxrss / 1.5) {
+        VLOG_INFO("peak resident set size decreased by %.0f%% in last %.1f "
+                  "seconds, from %lu kB to %lu kB",
+                  (1 - (double) usage.ru_maxrss / last_reported_maxrss) * 100,
+                  (now - last_report) / 1000.0,
+                  last_reported_maxrss, (unsigned long int) usage.ru_maxrss);
     } else {
         return;
     }
