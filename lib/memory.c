@@ -50,7 +50,7 @@ static unsigned long int last_reported_maxrss;
 static bool want_report;
 
 /* Try to return memory to the system if consumption grew significantly. */
-static bool trim_on_growth = false;
+static bool trim_on_growth = true;
 
 /* Unixctl connections waiting for responses. */
 static struct unixctl_conn **conns;
