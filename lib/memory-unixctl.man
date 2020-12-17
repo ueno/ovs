@@ -1,7 +1,11 @@
 .SS "MEMORY COMMANDS"
-These commands report memory usage.
+These commands report/control memory usage.
 .
 .IP "\fBmemory/show\fR"
 Displays some basic statistics about \fB\*(PN\fR's memory usage.
 \fB\*(PN\fR also logs this information soon after startup and
 periodically as its memory consumption grows.
+.IP "\fBmemory/trim-on-growth\fR \fIon\fR|\fIoff\fR"
+If this option is \fIon\fR, \fB\*(PN\fR will try to reclaim all unused
+heap memory back to the system if significant memory consumption growth
+detected.  \fIoff\fR by default.

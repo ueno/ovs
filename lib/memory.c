@@ -16,9 +16,15 @@
 
 #include <config.h>
 #include "memory.h"
+
+#if HAVE_DECL_MALLOC_TRIM
+#include <malloc.h>
+#endif
+
 #include <stdbool.h>
 #include <sys/time.h>
 #include <sys/resource.h>
+
 #include "openvswitch/dynamic-string.h"
 #include "openvswitch/poll-loop.h"
 #include "simap.h"
@@ -42,6 +48,9 @@ static unsigned long int last_reported_maxrss;
 
 /* Are we expecting a call to memory_report()? */
 static bool want_report;
+
+/* Try to return memory to the system if consumption grew significantly. */
+static bool trim_on_growth = false;
 
 /* Unixctl connections waiting for responses. */
 static struct unixctl_conn **conns;
@@ -82,6 +91,11 @@ memory_run(void)
                   ((double) usage.ru_maxrss / last_reported_maxrss - 1) * 100,
                   (now - last_report) / 1000.0,
                   last_reported_maxrss, (unsigned long int) usage.ru_maxrss);
+#if HAVE_DECL_MALLOC_TRIM
+        if (trim_on_growth) {
+            malloc_trim(0);
+        }
+#endif
     } else if (usage.ru_maxrss < last_reported_maxrss / 1.5) {
         VLOG_INFO("peak resident set size decreased by %.0f%% in last %.1f "
                   "seconds, from %lu kB to %lu kB",
@@ -173,6 +187,32 @@ memory_unixctl_show(struct unixctl_conn *conn, int argc OVS_UNUSED,
 }
 
 static void
+memory_unixctl_trim_on_growth(struct unixctl_conn *conn,
+                              int argc OVS_UNUSED,
+                              const char *argv[],
+                              void *arg OVS_UNUSED)
+{
+    const char *command = argv[1];
+
+#if !HAVE_DECL_MALLOC_TRIM
+    unixctl_command_reply_error(conn, "memory trimming is not supported");
+    return;
+#endif
+
+    if (!strcmp(command, "on")) {
+        trim_on_growth = true;
+    } else if (!strcmp(command, "off")) {
+        trim_on_growth = false;
+    } else {
+        unixctl_command_reply_error(conn, "invalid argument");
+        return;
+    }
+    VLOG_INFO("memory trimming on consumption growth %s.",
+              trim_on_growth ? "enabled" : "disabled");
+    unixctl_command_reply(conn, NULL);
+}
+
+static void
 memory_init(void)
 {
     static bool inited = false;
@@ -181,6 +221,9 @@ memory_init(void)
         inited = true;
         unixctl_command_register("memory/show", "", 0, 0,
                                  memory_unixctl_show, NULL);
+        unixctl_command_register("memory/trim-on-consumption-growth",
+                                 "on|off", 1, 1,
+                                 memory_unixctl_trim_on_growth, NULL);
 
         next_check = time_boot_msec() + MEMORY_CHECK_INTERVAL;
     }

@@ -17,6 +17,10 @@ Post-v2.14.0
      * Maximum backlog on RAFT connections limited to 500 messages or 4GB.
        Once threshold reached, connection is dropped (and re-established).
        Use the 'cluster/set-backlog-threshold' command to change limits.
+   - New unixctl command 'memory/trim-on-growth on|off' available for
+     ovsdb-server and ovs-vswitchd.  If turned on, application will try to
+     reclaim all the unused memory back to OS if significant ( >= 50%)
+     consumption growth detected.  Disabled by default.
    - DPDK:
      * Removed support for vhost-user dequeue zero-copy.
      * Add support for DPDK 20.11.
