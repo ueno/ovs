@@ -977,17 +977,28 @@ ovsdb_jsonrpc_session_unlock(struct ovsdb_jsonrpc_session *s,
 
 static struct jsonrpc_msg *
 ovsdb_jsonrpc_session_set_db_change_aware(struct ovsdb_jsonrpc_session *s,
-                                          const struct jsonrpc_msg *request)
+                                          const struct jsonrpc_msg *request,
+                                          bool needs_reply)
 {
     const struct json_array *params = json_array(request->params);
     if (params->n != 1
         || (params->elems[0]->type != JSON_TRUE &&
             params->elems[0]->type != JSON_FALSE)) {
+        if (!needs_reply) {
+            char *param = json_to_string(params->elems[0], 0);
+            VLOG_WARN_RL(&rl,"%s: received set_db_change_aware message "
+                         "with unexpected parameter %s",
+                         jsonrpc_session_get_name(s->js), param);
+            free(param);
+            return NULL;
+        }
         return syntax_error_reply(request, "true or false parameter expected");
     }
 
     s->db_change_aware = json_boolean(params->elems[0]);
-    return jsonrpc_create_reply(json_object_create(), request->id);
+    return needs_reply
+           ? jsonrpc_create_reply(json_object_create(), request->id)
+           : NULL;
 }
 
 static void
@@ -1058,7 +1069,7 @@ ovsdb_jsonrpc_session_got_request(struct ovsdb_jsonrpc_session *s,
     } else if (!strcmp(request->method, "unlock")) {
         reply = ovsdb_jsonrpc_session_unlock(s, request);
     } else if (!strcmp(request->method, "set_db_change_aware")) {
-        reply = ovsdb_jsonrpc_session_set_db_change_aware(s, request);
+        reply = ovsdb_jsonrpc_session_set_db_change_aware(s, request, true);
     } else if (!strcmp(request->method, "echo")) {
         reply = jsonrpc_create_reply(json_clone(request->params), request->id);
     } else {
@@ -1093,6 +1104,8 @@ ovsdb_jsonrpc_session_got_notify(struct ovsdb_jsonrpc_session *s,
 {
     if (!strcmp(request->method, "cancel")) {
         execute_cancel(s, request);
+    } else if (!strcmp(request->method, "set_db_change_aware")) {
+        ovsdb_jsonrpc_session_set_db_change_aware(s, request, false);
     }
     jsonrpc_msg_destroy(request);
 }

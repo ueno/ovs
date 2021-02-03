@@ -1448,9 +1448,8 @@ ovsdb_cs_send_schema_request(struct ovsdb_cs *cs,
 static void
 ovsdb_cs_send_db_change_aware(struct ovsdb_cs *cs)
 {
-    struct jsonrpc_msg *msg = jsonrpc_create_request(
-        "set_db_change_aware", json_array_create_1(json_boolean_create(true)),
-        NULL);
+    struct jsonrpc_msg *msg = jsonrpc_create_notify(
+        "set_db_change_aware", json_array_create_1(json_boolean_create(true)));
     jsonrpc_session_send(cs->session, msg);
 }
 
