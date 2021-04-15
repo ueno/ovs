@@ -3987,18 +3987,31 @@ raft_save_snapshot(struct raft *raft,
 {
     struct ovsdb_log *new_log;
     struct ovsdb_error *error;
+    uint64_t start_time, elapsed;
+
     error = ovsdb_log_replace_start(raft->log, &new_log);
     if (error) {
         return error;
     }
 
+    start_time = time_msec();
     error = raft_write_snapshot(raft, new_log, new_start, new_snapshot);
     if (error) {
         ovsdb_log_replace_abort(new_log);
         return error;
     }
+    elapsed = time_msec() - start_time;
+    if (elapsed > 1000) {
+        VLOG_INFO("raft_write_snapshot() took %"PRIu64"ms", elapsed);
+    }
 
-    return ovsdb_log_replace_commit(raft->log, new_log);
+    start_time = time_msec();
+    error = ovsdb_log_replace_commit(raft->log, new_log);
+    elapsed = time_msec() - start_time;
+    if (elapsed > 1000) {
+        VLOG_INFO("ovsdb_log_replace_commit() took %"PRIu64"ms", elapsed);
+    }
+    return error;
 }
 
 static bool
@@ -4160,7 +4173,22 @@ raft_may_snapshot(const struct raft *raft)
             && !raft->leaving
             && !raft->left
             && !raft->failed
+            && raft->role != RAFT_LEADER
             && raft->last_applied >= raft->log_start);
+}
+
+/* Prepares for soon snapshotting.  */
+void
+raft_notify_snapshot_recommended(struct raft *raft)
+{
+    if (raft->role == RAFT_LEADER) {
+        /* Leader is about to write database snapshot to the disk and this
+         * might take significant amount of time.  Stepping back from the
+         * leadership to avoid falling out of the cluster.  */
+        VLOG_INFO("Transferring leadership to write a snapshot.");
+        raft_transfer_leadership(raft, "preparing to write snapshot");
+        raft_become_follower(raft);
+    }
 }
 
 /* Replaces the log for 'raft', up to the last log entry read, by
@@ -4191,6 +4219,7 @@ raft_store_snapshot(struct raft *raft, const struct json *new_snapshot_data)
         return ovsdb_error(NULL, "not storing a duplicate snapshot");
     }
 
+    uint64_t elapsed, start_time = time_msec();
     uint64_t new_log_start = raft->last_applied + 1;
     struct raft_entry new_snapshot = {
         .term = raft_get_term(raft, new_log_start - 1),
@@ -4215,6 +4244,12 @@ raft_store_snapshot(struct raft *raft, const struct json *new_snapshot_data)
     memmove(&raft->entries[0], &raft->entries[new_log_start - raft->log_start],
             (raft->log_end - new_log_start) * sizeof *raft->entries);
     raft->log_start = new_log_start;
+
+    elapsed = time_msec() - start_time;
+    if (elapsed > 1000) {
+        VLOG_INFO("snapshot storing took %"PRIu64"ms", elapsed);
+    }
+
     return NULL;
 }
 
