@@ -221,7 +221,7 @@ ovsdb_schema_from_json(const struct json *json, struct ovsdb_schema **schemap)
     schema = ovsdb_schema_create(json_string(name), version,
                                  cksum ? json_string(cksum) : "");
     SHASH_FOR_EACH (node, json_object(tables)) {
-        struct ovsdb_table_schema *table;
+        struct ovsdb_table_schema *table, *synced_table;
 
         if (node->name[0] == '_') {
             error = ovsdb_syntax_error(json, NULL, "names beginning with "
@@ -238,6 +238,21 @@ ovsdb_schema_from_json(const struct json *json, struct ovsdb_schema **schemap)
         }
 
         shash_add(&schema->tables, table->name, table);
+
+        if (schema->name[0] == '_') {
+            /* Internal database.  Creating copy of the table for the case it
+             * will be synced from other server. */
+            char *synced_table_name = xasprintf("_synced_%s", node->name);
+            error = ovsdb_table_schema_from_json(node->data, synced_table_name,
+                                                 &synced_table);
+            free(synced_table_name);
+            if (error) {
+                ovsdb_schema_destroy(schema);
+                return error;
+            }
+            shash_add(&schema->tables, synced_table->name, synced_table);
+        }
+
     }
 
     /* "isRoot" was not part of the original schema definition.  Before it was
@@ -308,8 +323,10 @@ ovsdb_schema_to_json(const struct ovsdb_schema *schema)
 
     SHASH_FOR_EACH (node, &schema->tables) {
         struct ovsdb_table_schema *table = node->data;
-        json_object_put(tables, table->name,
+        if (node->name[0] != '_') {
+            json_object_put(tables, table->name,
                         ovsdb_table_schema_to_json(table, default_is_root));
+        }
     }
     json_object_put(json, "tables", tables);
 
