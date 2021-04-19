@@ -49,6 +49,7 @@ static void add_monitored_table(struct ovsdb_table_schema *table,
                                 struct json *monitor_requests);
 
 static struct ovsdb_error *reset_database(struct ovsdb *db);
+static void reset_internal_databases(void);
 
 static struct ovsdb_error *process_notification(struct json *, struct ovsdb *);
 static struct ovsdb_error *process_table_update(struct json *table_update,
@@ -104,6 +105,7 @@ static enum ovsdb_replication_state state;
 struct replication_db {
     struct ovsdb *db;
     bool schema_version_higher;
+    bool internal;  /* True if the database name starts with '_'. */
      /* Points to the schema received from the active server if
       * the local db schema version is higher. NULL otherwise. */
     struct ovsdb_schema *active_db_schema;
@@ -117,6 +119,10 @@ static bool is_replication_possible(struct ovsdb_schema *local_db_schema,
  * schema matches.  */
 static struct shash local_dbs = SHASH_INITIALIZER(&local_dbs);
 static struct shash *replication_dbs;
+
+/* Number of internal databases in 'replication_dbs', i.e. databases which
+ * name starts with '_'. */
+static int n_internal_dbs = 0;
 
 static struct shash *replication_dbs_create(void);
 static void replication_dbs_destroy(void);
@@ -134,6 +140,7 @@ replication_init(const char *sync_from_, const char *exclude_tables,
      * parseable. An error here is unexpected. */
     ovs_assert(!set_excluded_tables(exclude_tables, false));
 
+    reset_internal_databases();
     replication_dbs_destroy();
 
     shash_clear(&local_dbs);
@@ -337,6 +344,9 @@ replication_run(void)
                         if (r->active_db_schema) {
                             ovsdb_schema_destroy(r->active_db_schema);
                         }
+                        if (r->internal) {
+                            n_internal_dbs--;
+                        }
                         free(r);
                         ovsdb_schema_destroy(schema);
                     }
@@ -349,8 +359,10 @@ replication_run(void)
                 if (hmap_is_empty(&request_ids)) {
                     struct shash_node *node;
 
-                    if (shash_is_empty(replication_dbs)) {
+                    if (shash_is_empty(replication_dbs) ||
+                        n_internal_dbs == shash_count(replication_dbs)) {
                         VLOG_WARN("Nothing to replicate.");
+                        replication_dbs_destroy();
                         state = RPL_S_ERR;
                     } else {
                         SHASH_FOR_EACH (node, replication_dbs) {
@@ -552,6 +564,8 @@ disconnect_active_server(void)
     session = NULL;
     /* Cancel all pending transactions. */
     ovsdb_txn_forward_cancel_all(false);
+    /* Clear data from '_synced_' tables. */
+    reset_internal_databases();
 }
 
 void
@@ -586,8 +600,12 @@ reset_database(struct ovsdb *db)
     struct shash_node *table_node;
 
     SHASH_FOR_EACH (table_node, &db->tables) {
+        /* Not removing data from non-replicated tables of internal DBs. */
+        bool internal_db_keep = db->schema->name[0] == '_' &&
+                                strncmp(table_node->name, "_synced_", 8);
         /* Delete all rows if the table is not excluded. */
-        if (!excluded_tables_find(db->schema->name, table_node->name)) {
+        if (!excluded_tables_find(db->schema->name, table_node->name)
+            && !internal_db_keep) {
             struct ovsdb_table *table = table_node->data;
             struct ovsdb_row *row, *next;
             HMAP_FOR_EACH_SAFE (row, next, hmap_node, &table->rows) {
@@ -597,6 +615,26 @@ reset_database(struct ovsdb *db)
     }
 
     return ovsdb_txn_propose_commit_block(txn, false);
+}
+
+static void
+reset_internal_databases(void)
+{
+    if (!replication_dbs) {
+        return;
+    }
+
+    struct shash_node *node;
+
+    SHASH_FOR_EACH (node, replication_dbs) {
+        struct replication_db *rdb = node->data;
+
+        if (rdb->internal) {
+            /* Cleaning up data from '_synced_' tables of internal DBs. */
+            VLOG_INFO("Resetting internal database %s", node->name);
+            ovsdb_error_assert(reset_database(rdb->db));
+        }
+    }
 }
 
 /* Create a monitor request for 'db'. The monitor request will include
@@ -617,9 +655,12 @@ create_monitor_request(struct ovsdb_schema *schema)
 
     for (int j = 0; j < n; j++) {
         struct ovsdb_table_schema *table = nodes[j]->data;
+        /* Not monitoring data from replicated tables of internal DBs. */
+        bool internal_db_skip = db_name[0] == '_' &&
+                                !strncmp(table->name, "_synced_", 8);
 
         /* Monitor all tables not excluded. */
-        if (!excluded_tables_find(db_name, table->name)) {
+        if (!excluded_tables_find(db_name, table->name) && !internal_db_skip) {
             add_monitored_table(table, monitor_request);
         }
     }
@@ -662,7 +703,13 @@ process_notification(struct json *table_updates, struct ovsdb *db)
         SHASH_FOR_EACH (node, json_object(table_updates)) {
             struct json *table_update = node->data;
             if (table_update) {
-                error = process_table_update(table_update, node->name, db, txn);
+                /* Data from internal DBs should go to special
+                 * '_synced_<name>' tables. */
+                char *name = db->schema->name[0] != '_'
+                             ? xstrdup(node->name)
+                             : xasprintf("_synced_%s", node->name);
+                error = process_table_update(table_update, name, db, txn);
+                free(name);
                 if (error) {
                     break;
                 }
@@ -853,7 +900,11 @@ replication_dbs_create(void)
         repl_db->db = node->data;
         repl_db->schema_version_higher = false;
         repl_db->active_db_schema = NULL;
+        repl_db->internal = (node->name[0] == '_');
         shash_add(new, node->name, repl_db);
+        if (repl_db->internal) {
+            n_internal_dbs++;
+        }
     }
 
     return new;
@@ -882,6 +933,7 @@ replication_dbs_destroy(void)
     hmap_destroy(&replication_dbs->map);
     free(replication_dbs);
     replication_dbs = NULL;
+    n_internal_dbs = 0;
 }
 
 /* Return true if replication just started or is ongoing.
