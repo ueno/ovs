@@ -255,6 +255,11 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v2
+      - name: disable defender
+        shell: powershell
+        run: |
+          Add-MpPreference -ExclusionPath C:\
+          Get-MpPreference
       - name: install msys 
         uses: msys2/setup-msys2@v2
         with:
