@@ -18,6 +18,8 @@
 
 #include "openvswitch/uuid.h"
 
+#include <string.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -55,10 +57,7 @@ uuid_hash(const struct uuid *uuid)
 static inline bool
 uuid_equals(const struct uuid *a, const struct uuid *b)
 {
-    return (a->parts[0] == b->parts[0]
-            && a->parts[1] == b->parts[1]
-            && a->parts[2] == b->parts[2]
-            && a->parts[3] == b->parts[3]);
+    return !memcmp(a, b, sizeof *a);
 }
 
 /* Returns the first 'n' hex digits of 'uuid', for 0 < 'n' <= 8.
