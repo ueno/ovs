@@ -21,6 +21,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <openvswitch/util.h>
+#include <util.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -35,14 +38,11 @@ struct ds;
  *
  * Values of unsupported statistics are set to all-1-bits (UINT64_MAX). */
 struct netdev_stats {
+    PADDED_MEMBERS_CACHELINE_MARKER(CACHE_LINE_SIZE, rx_stats,
     uint64_t rx_packets;        /* Total packets received. */
-    uint64_t tx_packets;        /* Total packets transmitted. */
     uint64_t rx_bytes;          /* Total bytes received. */
-    uint64_t tx_bytes;          /* Total bytes transmitted. */
     uint64_t rx_errors;         /* Bad packets received. */
-    uint64_t tx_errors;         /* Packet transmit problems. */
     uint64_t rx_dropped;        /* No buffer space. */
-    uint64_t tx_dropped;        /* No buffer space. */
     uint64_t multicast;         /* Multicast packets received. */
     uint64_t collisions;
 
@@ -54,13 +54,6 @@ struct netdev_stats {
     uint64_t rx_fifo_errors;    /* Recv'r fifo overrun . */
     uint64_t rx_missed_errors;  /* Receiver missed packet. */
 
-    /* Detailed transmit errors. */
-    uint64_t tx_aborted_errors;
-    uint64_t tx_carrier_errors;
-    uint64_t tx_fifo_errors;
-    uint64_t tx_heartbeat_errors;
-    uint64_t tx_window_errors;
-
     /* Extended statistics based on RFC2819. */
     uint64_t rx_1_to_64_packets;
     uint64_t rx_65_to_127_packets;
@@ -70,6 +63,28 @@ struct netdev_stats {
     uint64_t rx_1024_to_1522_packets;
     uint64_t rx_1523_to_max_packets;
 
+    uint64_t rx_broadcast_packets;
+
+    uint64_t rx_undersized_errors;
+    uint64_t rx_oversize_errors;
+    uint64_t rx_fragmented_errors;
+    uint64_t rx_jabber_errors;
+    );
+
+    PADDED_MEMBERS_CACHELINE_MARKER(CACHE_LINE_SIZE, tx_stats,
+    uint64_t tx_packets;        /* Total packets transmitted. */
+    uint64_t tx_bytes;          /* Total bytes transmitted. */
+    uint64_t tx_errors;         /* Packet transmit problems. */
+    uint64_t tx_dropped;        /* No buffer space. */
+
+    /* Detailed transmit errors. */
+    uint64_t tx_aborted_errors;
+    uint64_t tx_carrier_errors;
+    uint64_t tx_fifo_errors;
+    uint64_t tx_heartbeat_errors;
+    uint64_t tx_window_errors;
+
+    /* Extended statistics based on RFC2819. */
     uint64_t tx_1_to_64_packets;
     uint64_t tx_65_to_127_packets;
     uint64_t tx_128_to_255_packets;
@@ -79,14 +94,8 @@ struct netdev_stats {
     uint64_t tx_1523_to_max_packets;
 
     uint64_t tx_multicast_packets;
-
-    uint64_t rx_broadcast_packets;
     uint64_t tx_broadcast_packets;
-
-    uint64_t rx_undersized_errors;
-    uint64_t rx_oversize_errors;
-    uint64_t rx_fragmented_errors;
-    uint64_t rx_jabber_errors;
+    );
 };
 
 /* Structure representation of custom statistics counter */

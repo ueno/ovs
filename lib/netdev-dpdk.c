@@ -481,9 +481,14 @@ struct netdev_dpdk {
     PADDED_MEMBERS(CACHE_LINE_SIZE,
         struct netdev_stats stats;
         struct netdev_dpdk_sw_stats *sw_stats;
-        /* Protects stats */
-        rte_spinlock_t stats_lock;
-        /* 36 pad bytes here. */
+    );
+    PADDED_MEMBERS(CACHE_LINE_SIZE,
+        /* Protects rx part of 'stats' and 'sw_stats'. */
+        rte_spinlock_t rx_stats_lock;
+    );
+    PADDED_MEMBERS(CACHE_LINE_SIZE,
+        /* Protects tx part of 'stats' and 'sw_stats'. */
+        rte_spinlock_t tx_stats_lock;
     );
 
     PADDED_MEMBERS(CACHE_LINE_SIZE,
@@ -1232,7 +1237,8 @@ common_construct(struct netdev *netdev, dpdk_port_t port_no,
 
     ovs_mutex_init(&dev->mutex);
 
-    rte_spinlock_init(&dev->stats_lock);
+    rte_spinlock_init(&dev->rx_stats_lock);
+    rte_spinlock_init(&dev->tx_stats_lock);
 
     /* If the 'sid' is negative, it means that the kernel fails
      * to obtain the pci numa info.  In that situation, always
@@ -2438,10 +2444,10 @@ netdev_dpdk_vhost_rxq_recv(struct netdev_rxq *rxq,
         qos_drops -= nb_rx;
     }
 
-    rte_spinlock_lock(&dev->stats_lock);
+    rte_spinlock_lock(&dev->rx_stats_lock);
     netdev_dpdk_vhost_update_rx_counters(dev, batch->packets,
                                          nb_rx, qos_drops);
-    rte_spinlock_unlock(&dev->stats_lock);
+    rte_spinlock_unlock(&dev->rx_stats_lock);
 
     batch->count = nb_rx;
     dp_packet_batch_init_packet_fields(batch);
@@ -2488,10 +2494,10 @@ netdev_dpdk_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch,
 
     /* Update stats to reflect dropped packets */
     if (OVS_UNLIKELY(dropped)) {
-        rte_spinlock_lock(&dev->stats_lock);
+        rte_spinlock_lock(&dev->rx_stats_lock);
         dev->stats.rx_dropped += dropped;
         dev->sw_stats->rx_qos_drops += dropped;
-        rte_spinlock_unlock(&dev->stats_lock);
+        rte_spinlock_unlock(&dev->rx_stats_lock);
     }
 
     batch->count = nb_rx;
@@ -2770,9 +2776,9 @@ netdev_dpdk_vhost_send(struct netdev *netdev, int qid,
     qid = dev->tx_q[qid % netdev->n_txq].map;
     if (OVS_UNLIKELY(vid < 0 || !dev->vhost_reconfigured || qid < 0
                      || !(dev->flags & NETDEV_UP))) {
-        rte_spinlock_lock(&dev->stats_lock);
+        rte_spinlock_lock(&dev->tx_stats_lock);
         dev->stats.tx_dropped += cnt;
-        rte_spinlock_unlock(&dev->stats_lock);
+        rte_spinlock_unlock(&dev->tx_stats_lock);
         dp_packet_delete_batch(batch, true);
         return 0;
     }
@@ -2815,10 +2821,10 @@ netdev_dpdk_vhost_send(struct netdev *netdev, int qid,
     stats.tx_failure_drops += cnt;
     stats.tx_retries = MIN(retries, max_retries);
 
-    rte_spinlock_lock(&dev->stats_lock);
+    rte_spinlock_lock(&dev->tx_stats_lock);
     netdev_dpdk_vhost_update_tx_counters(dev, batch->packets, batch_cnt,
                                          &stats);
-    rte_spinlock_unlock(&dev->stats_lock);
+    rte_spinlock_unlock(&dev->tx_stats_lock);
 
     pkts = (struct rte_mbuf **) batch->packets;
     for (int i = 0; i < vhost_batch_cnt; i++) {
@@ -2839,9 +2845,9 @@ netdev_dpdk_eth_send(struct netdev *netdev, int qid,
     int cnt, dropped;
 
     if (OVS_UNLIKELY(!(dev->flags & NETDEV_UP))) {
-        rte_spinlock_lock(&dev->stats_lock);
+        rte_spinlock_lock(&dev->tx_stats_lock);
         dev->stats.tx_dropped += dp_packet_batch_size(batch);
-        rte_spinlock_unlock(&dev->stats_lock);
+        rte_spinlock_unlock(&dev->tx_stats_lock);
         dp_packet_delete_batch(batch, true);
         return 0;
     }
@@ -2859,13 +2865,13 @@ netdev_dpdk_eth_send(struct netdev *netdev, int qid,
     if (OVS_UNLIKELY(dropped)) {
         struct netdev_dpdk_sw_stats *sw_stats = dev->sw_stats;
 
-        rte_spinlock_lock(&dev->stats_lock);
+        rte_spinlock_lock(&dev->tx_stats_lock);
         dev->stats.tx_dropped += dropped;
         sw_stats->tx_failure_drops += stats.tx_failure_drops;
         sw_stats->tx_mtu_exceeded_drops += stats.tx_mtu_exceeded_drops;
         sw_stats->tx_qos_drops += stats.tx_qos_drops;
         sw_stats->tx_invalid_hwol_drops += stats.tx_invalid_hwol_drops;
-        rte_spinlock_unlock(&dev->stats_lock);
+        rte_spinlock_unlock(&dev->tx_stats_lock);
     }
 
     if (OVS_UNLIKELY(concurrent_txq)) {
@@ -2983,7 +2989,8 @@ netdev_dpdk_vhost_get_stats(const struct netdev *netdev,
 
     ovs_mutex_lock(&dev->mutex);
 
-    rte_spinlock_lock(&dev->stats_lock);
+    rte_spinlock_lock(&dev->rx_stats_lock);
+    rte_spinlock_lock(&dev->tx_stats_lock);
     /* Supported Stats */
     stats->rx_packets = dev->stats.rx_packets;
     stats->tx_packets = dev->stats.tx_packets;
@@ -3003,7 +3010,8 @@ netdev_dpdk_vhost_get_stats(const struct netdev *netdev,
     stats->rx_1024_to_1522_packets = dev->stats.rx_1024_to_1522_packets;
     stats->rx_1523_to_max_packets = dev->stats.rx_1523_to_max_packets;
 
-    rte_spinlock_unlock(&dev->stats_lock);
+    rte_spinlock_unlock(&dev->tx_stats_lock);
+    rte_spinlock_unlock(&dev->rx_stats_lock);
 
     ovs_mutex_unlock(&dev->mutex);
 
@@ -3117,10 +3125,12 @@ out:
     stats->rx_errors = rte_stats.ierrors;
     stats->tx_errors = rte_stats.oerrors;
 
-    rte_spinlock_lock(&dev->stats_lock);
+    rte_spinlock_lock(&dev->tx_stats_lock);
     stats->tx_dropped = dev->stats.tx_dropped;
+    rte_spinlock_unlock(&dev->tx_stats_lock);
+    rte_spinlock_lock(&dev->rx_stats_lock);
     stats->rx_dropped = dev->stats.rx_dropped;
-    rte_spinlock_unlock(&dev->stats_lock);
+    rte_spinlock_unlock(&dev->rx_stats_lock);
 
     /* These are the available DPDK counters for packets not received due to
      * local resource constraints in DPDK and NIC respectively. */
@@ -3205,13 +3215,15 @@ netdev_dpdk_get_sw_custom_stats(const struct netdev *netdev,
 
     ovs_mutex_lock(&dev->mutex);
 
-    rte_spinlock_lock(&dev->stats_lock);
+    rte_spinlock_lock(&dev->rx_stats_lock);
+    rte_spinlock_lock(&dev->tx_stats_lock);
     i = 0;
 #define SW_CSTAT(NAME) \
     custom_stats->counters[i++].value = dev->sw_stats->NAME;
     SW_CSTATS;
 #undef SW_CSTAT
-    rte_spinlock_unlock(&dev->stats_lock);
+    rte_spinlock_unlock(&dev->tx_stats_lock);
+    rte_spinlock_unlock(&dev->rx_stats_lock);
 
     ovs_mutex_unlock(&dev->mutex);
 
@@ -3499,9 +3511,11 @@ netdev_dpdk_update_flags__(struct netdev_dpdk *dev,
 
             /* Clear statistics if device is getting up. */
             if (NETDEV_UP & on) {
-                rte_spinlock_lock(&dev->stats_lock);
+                rte_spinlock_lock(&dev->rx_stats_lock);
+                rte_spinlock_lock(&dev->tx_stats_lock);
                 memset(&dev->stats, 0, sizeof dev->stats);
-                rte_spinlock_unlock(&dev->stats_lock);
+                rte_spinlock_unlock(&dev->tx_stats_lock);
+                rte_spinlock_unlock(&dev->rx_stats_lock);
             }
         }
     }
