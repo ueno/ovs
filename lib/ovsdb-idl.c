@@ -1117,12 +1117,14 @@ ovsdb_idl_condition_add_clause(struct ovsdb_idl_condition *condition,
         struct ovsdb_idl_clause clause = {
             .function = function,
             .column = column,
-            .arg = *arg,
         };
+        ovsdb_datum_clone(&clause.arg, arg, &column->type);
+
         uint32_t hash = ovsdb_idl_clause_hash(&clause);
         if (!ovsdb_idl_condition_find_clause(condition, &clause, hash)) {
             ovsdb_idl_condition_add_clause__(condition, &clause, hash);
         }
+        ovsdb_datum_destroy(&clause.arg, &column->type);
     }
 }
 
@@ -3639,8 +3641,7 @@ ovsdb_idl_txn_write(const struct ovsdb_idl_row *row,
                     const struct ovsdb_idl_column *column,
                     struct ovsdb_datum *datum)
 {
-    ovsdb_datum_sort_unique(datum,
-                            column->type.key.type, column->type.value.type);
+    ovsdb_datum_sort_unique(datum, &column->type);
     ovsdb_idl_txn_write__(row, column, datum, true);
 }
 
