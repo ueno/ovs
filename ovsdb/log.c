@@ -563,7 +563,8 @@ void
 ovsdb_log_compose_record(const struct json *json,
                          const char *magic, struct ds *header, struct ds *data)
 {
-    ovs_assert(json->type == JSON_OBJECT || json->type == JSON_ARRAY);
+    ovs_assert(json->type == JSON_OBJECT || json->type == JSON_ARRAY
+               || json->type == JSON_SERIALIZED_OBJECT);
     ovs_assert(!header->length);
     ovs_assert(!data->length);
 
@@ -610,7 +611,8 @@ ovsdb_log_write(struct ovsdb_log *file, const struct json *json)
         return ovsdb_error_clone(file->error);
     }
 
-    if (json->type != JSON_OBJECT && json->type != JSON_ARRAY) {
+    if (json->type != JSON_OBJECT && json->type != JSON_SERIALIZED_OBJECT
+        && json->type != JSON_ARRAY) {
         return OVSDB_BUG("bad JSON type");
     }
 

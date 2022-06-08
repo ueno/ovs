@@ -25,9 +25,12 @@
 #include "file.h"
 #include "monitor.h"
 #include "openvswitch/json.h"
+#include "ovs-thread.h"
 #include "ovsdb-error.h"
 #include "ovsdb-parser.h"
 #include "ovsdb-types.h"
+#include "row.h"
+#include "seq.h"
 #include "simap.h"
 #include "storage.h"
 #include "table.h"
@@ -535,6 +538,66 @@ ovsdb_get_table(const struct ovsdb *db, const char *name)
     return shash_find_data(&db->tables, name);
 }
 
+static struct ovsdb *
+ovsdb_clone_data(const struct ovsdb *db)
+{
+    struct ovsdb *new = ovsdb_create(ovsdb_schema_clone(db->schema), NULL);
+
+    struct shash_node *node;
+    SHASH_FOR_EACH (node, &db->tables) {
+        struct ovsdb_table *table = node->data;
+        struct ovsdb_table *new_table = shash_find_data(&new->tables,
+                                                        node->name);
+        struct ovsdb_row *row, *new_row;
+
+        hmap_reserve(&new_table->rows, hmap_count(&table->rows));
+        HMAP_FOR_EACH (row, hmap_node, &table->rows) {
+            new_row = ovsdb_row_datum_clone(row);
+            hmap_insert(&new_table->rows, &new_row->hmap_node,
+                        ovsdb_row_hash(new_row));
+        }
+    }
+
+    return new;
+}
+
+static void *
+compaction_thread(void *aux_)
+{
+    struct ovsdb_compaction_aux *aux = aux_;
+    uint64_t start_time = time_msec();
+    struct json *data;
+
+    VLOG_INFO("%s: Compaction thread started.", aux->db->name);
+    data = ovsdb_to_txn_json(aux->db, "compacting database online");
+    aux->data = json_serialized_object_create(data);
+    json_destroy(data);
+
+    aux->thread_time = time_msec() - start_time;
+
+    VLOG_INFO("%s: Compaction thread finished in %"PRIu64" ms.",
+              aux->db->name, aux->thread_time);
+    seq_change(aux->done);
+    return NULL;
+}
+
+void
+ovsdb_snapshot_wait(struct ovsdb *db)
+{
+    if (db->snap_aux) {
+        seq_wait(db->snap_aux->done, db->snap_aux->seqno);
+    }
+}
+
+bool
+ovsdb_snapshot_ready(struct ovsdb *db)
+{
+    if (!db->snap_aux) {
+        return false;
+    }
+    return seq_read(db->snap_aux->done) != db->snap_aux->seqno;
+}
+
 struct ovsdb_error * OVS_WARN_UNUSED_RESULT
 ovsdb_snapshot(struct ovsdb *db, bool trim_memory OVS_UNUSED)
 {
@@ -542,11 +605,48 @@ ovsdb_snapshot(struct ovsdb *db, bool trim_memory OVS_UNUSED)
         return NULL;
     }
 
-    uint64_t elapsed, start_time = time_msec();
-    struct json *schema = ovsdb_schema_to_json(db->schema);
-    struct json *data = ovsdb_to_txn_json(db, "compacting database online");
+    uint64_t applied_index = ovsdb_storage_get_applied_index(db->storage);
+    uint64_t elapsed, init_time = 0, start_time = time_msec();
+    struct json *data, *schema;
+
+    if (!applied_index) {
+        /* Parallel compaction is not supported for standalone databases. */
+        data = ovsdb_to_txn_json(db, "compacting database online");
+        schema = ovsdb_schema_to_json(db->schema);
+    } else if (!db->snap_aux) {
+        /* Creating a thread. */
+        struct ovsdb_compaction_aux *aux = xzalloc(sizeof *aux);
+
+        aux->db = ovsdb_clone_data(db);
+        aux->schema = ovsdb_schema_to_json(db->schema);
+        aux->done = seq_create();
+        aux->seqno = seq_read(aux->done);
+        aux->thread = ovs_thread_create("compaction", compaction_thread, aux);
+        aux->init_time = time_msec() - start_time;
+
+        db->snap_aux = aux;
+        return NULL;
+    } else {
+        if (seq_read(db->snap_aux->done) == db->snap_aux->seqno) {
+            /* In progress. */
+            return NULL;
+        }
+        xpthread_join(db->snap_aux->thread, NULL);
+
+        applied_index = db->snap_aux->applied_index;
+        data = db->snap_aux->data;
+        schema = db->snap_aux->schema;
+        init_time = db->snap_aux->init_time;
+
+        ovsdb_destroy(db->snap_aux->db);
+        seq_destroy(db->snap_aux->done);
+        free(db->snap_aux);
+        db->snap_aux = NULL;
+    }
+
     struct ovsdb_error *error = ovsdb_storage_store_snapshot(db->storage,
-                                                             schema, data);
+                                                             schema, data,
+                                                             applied_index);
     json_destroy(schema);
     json_destroy(data);
 
@@ -556,11 +656,12 @@ ovsdb_snapshot(struct ovsdb *db, bool trim_memory OVS_UNUSED)
     }
 #endif
 
-    elapsed = time_msec() - start_time;
-    if (elapsed > 1000) {
+    elapsed = time_msec() - start_time + init_time;
+    if (elapsed > 1) {
         VLOG_INFO("%s: Database compaction took %"PRIu64"ms",
                   db->name, elapsed);
     }
+
     return error;
 }
 

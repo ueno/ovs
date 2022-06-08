@@ -250,7 +250,8 @@ main_loop(struct server_config *config,
                 remove_db(config, node,
                           xasprintf("removing database %s because storage "
                                     "disconnected permanently", node->name));
-            } else if (ovsdb_storage_should_snapshot(db->db->storage)) {
+            } else if (ovsdb_storage_should_snapshot(db->db->storage) ||
+                       ovsdb_snapshot_ready(db->db)) {
                 log_and_free_error(ovsdb_snapshot(db->db, trim_memory));
             }
         }
@@ -285,6 +286,7 @@ main_loop(struct server_config *config,
             ovsdb_trigger_wait(db->db, time_msec());
             ovsdb_storage_wait(db->db->storage);
             ovsdb_storage_read_wait(db->db->storage);
+            ovsdb_snapshot_wait(db->db);
         }
         if (run_process) {
             process_wait(run_process);
