@@ -19,6 +19,7 @@
 
 #include <stdbool.h>
 #include <stdlib.h>
+#include "openvswitch/compiler.h"
 #include "openvswitch/util.h"
 
 #ifdef  __cplusplus
@@ -402,6 +403,9 @@ hmap_next__(const struct hmap *hmap, size_t start)
     size_t i;
     for (i = start; i <= hmap->mask; i++) {
         struct hmap_node *node = hmap->buckets[i];
+        if (i < hmap->mask) {
+            OVS_PREFETCH(&hmap->buckets[i + 1]);
+        }
         if (node) {
             return node;
         }
@@ -427,9 +431,17 @@ hmap_first(const struct hmap *hmap)
 static inline struct hmap_node *
 hmap_next(const struct hmap *hmap, const struct hmap_node *node)
 {
-    return (node->next
-            ? node->next
-            : hmap_next__(hmap, (node->hash & hmap->mask) + 1));
+    struct hmap_node *next;
+
+    next = node->next
+           ? node->next
+           : hmap_next__(hmap, (node->hash & hmap->mask) + 1);
+
+    if (next) {
+        OVS_PREFETCH(&next->next);
+    }
+
+    return next;
 }
 
 #ifdef  __cplusplus
