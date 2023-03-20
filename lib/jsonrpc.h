@@ -150,4 +150,5 @@ void jsonrpc_session_set_backlog_threshold(struct jsonrpc_session *,
                                            size_t max_backlog_bytes);
 const char *jsonrpc_session_get_id(const struct jsonrpc_session *);
 
+struct jsonrpc *jsonrpc_connect_to_target(const char *target);
 #endif /* jsonrpc.h */

@@ -35,7 +35,6 @@
 
 static void usage(void);
 static const char *parse_command_line(int argc, char *argv[]);
-static struct jsonrpc *connect_to_target(const char *target);
 
 int
 main(int argc, char *argv[])
@@ -51,7 +50,7 @@ main(int argc, char *argv[])
 
     /* Parse command line and connect to target. */
     target = parse_command_line(argc, argv);
-    client = connect_to_target(target);
+    client = jsonrpc_connect_to_target(target);
 
     /* Transact request and process reply. */
     cmd = argv[optind++];
@@ -196,43 +195,3 @@ parse_command_line(int argc, char *argv[])
 
     return target ? target : "ovs-vswitchd";
 }
-
-static struct jsonrpc *
-connect_to_target(const char *target)
-{
-    struct jsonrpc *client;
-    char *socket_name;
-    int error;
-
-#ifndef _WIN32
-    if (target[0] != '/') {
-        char *pidfile_name;
-        pid_t pid;
-
-        pidfile_name = xasprintf("%s/%s.pid", ovs_rundir(), target);
-        pid = read_pidfile(pidfile_name);
-        if (pid < 0) {
-            ovs_fatal(-pid, "cannot read pidfile \"%s\"", pidfile_name);
-        }
-        free(pidfile_name);
-        socket_name = xasprintf("%s/%s.%ld.ctl",
-                                ovs_rundir(), target, (long int) pid);
-#else
-    /* On windows, if the 'target' contains ':', we make an assumption that
-     * it is an absolute path. */
-    if (!strchr(target, ':')) {
-        socket_name = xasprintf("%s/%s.ctl", ovs_rundir(), target);
-#endif
-    } else {
-        socket_name = xstrdup(target);
-    }
-
-    error = unixctl_client_create(socket_name, &client);
-    if (error) {
-        ovs_fatal(error, "cannot connect to \"%s\"", socket_name);
-    }
-    free(socket_name);
-
-    return client;
-}
-

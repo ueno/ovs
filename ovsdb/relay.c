@@ -152,6 +152,7 @@ ovsdb_relay_add_db(struct ovsdb *db, const char *remote,
     shash_add(&relay_dbs, db->name, ctx);
     ovsdb_cs_set_leader_only(ctx->cs, false);
     ovsdb_cs_set_remote(ctx->cs, remote, true);
+    ovsdb_cs_set_probe_interval(ctx->cs, 16000);
 
     VLOG_DBG("added database: %s, %s", db->name, remote);
 }

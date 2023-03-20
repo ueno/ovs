@@ -36,16 +36,22 @@
 #include "dirs.h"
 #include "dpctl.h"
 #include "fatal-signal.h"
+#include "jsonrpc.h"
 #include "odp-util.h"
 #include "packets.h"
+#include "process.h"
+#include "svec.h"
 #include "timeval.h"
 #include "util.h"
+#include "openvswitch/poll-loop.h"
 #include "openvswitch/vlog.h"
 
 static struct dpctl_params dpctl_p;
 
 OVS_NO_RETURN static void usage(void *userdata OVS_UNUSED);
 static void parse_options(int argc, char *argv[]);
+
+static bool direct_dp_access = false;
 
 static void
 dpctl_print(void *userdata OVS_UNUSED, bool error, const char *msg)
@@ -62,12 +68,57 @@ main(int argc, char *argv[])
     parse_options(argc, argv);
     fatal_ignore_sigpipe();
 
-    dpctl_p.is_appctl = false;
-    dpctl_p.output = dpctl_print;
-    dpctl_p.usage = usage;
+    struct jsonrpc *client = NULL;
 
-    error = dpctl_run_command(argc - optind, (const char **) argv + optind,
-                              &dpctl_p);
+#ifndef _WIN32
+    if (!direct_dp_access) {
+        client = jsonrpc_connect_to_target("ovs-vswitchd");
+    }
+#endif
+    if (client) {
+        struct svec args = SVEC_EMPTY_INITIALIZER;
+        struct process *process;
+
+        jsonrpc_close(client);
+
+        svec_add(&args, "ovs-appctl");
+        svec_add(&args, "--target");
+        svec_add(&args, "ovs-vswitchd");
+        for (size_t i = 1; i < argc; i++) {
+            if (i != optind) {
+                svec_add(&args, argv[i]);
+            } else {
+                svec_add_nocopy(&args, xasprintf("dpctl/%s", argv[i]));
+            }
+        }
+        svec_terminate(&args);
+
+        error = process_start(args.names, &process);
+        svec_destroy(&args);
+        if (error) {
+            ovs_fatal(error, "ovs-appctl: process failed to start");
+        }
+
+        while (!process_exited(process)) {
+            process_run();
+            process_wait(process);
+            poll_block();
+        }
+        error = process_status(process);
+    } else if (!direct_dp_access) {
+        error = ENOTCONN;
+        printf("Unable to connect to running ovs-vswitchd.\n"
+               "Use --direct-dp-access avoid connection attempt.\n"
+               "WARNING: Direct access may interfere with or even break"
+               "the running ovs-vswitchd.");
+    } else {
+        dpctl_p.is_appctl = false;
+        dpctl_p.output = dpctl_print;
+        dpctl_p.usage = usage;
+
+        error = dpctl_run_command(argc - optind, (const char **) argv + optind,
+                                  &dpctl_p);
+    }
     return error ? EXIT_FAILURE : EXIT_SUCCESS;
 }
 
@@ -76,6 +127,7 @@ parse_options(int argc, char *argv[])
 {
     enum {
         OPT_CLEAR = UCHAR_MAX + 1,
+        OPT_DIRECT_DP_ACCESS,
         OPT_MAY_CREATE,
         OPT_READ_ONLY,
         OPT_NAMES,
@@ -85,6 +137,7 @@ parse_options(int argc, char *argv[])
     static const struct option long_options[] = {
         {"statistics", no_argument, NULL, 's'},
         {"clear", no_argument, NULL, OPT_CLEAR},
+        {"direct-dp-access", no_argument, NULL, OPT_DIRECT_DP_ACCESS},
         {"may-create", no_argument, NULL, OPT_MAY_CREATE},
         {"read-only", no_argument, NULL, OPT_READ_ONLY},
         {"more", no_argument, NULL, 'm'},
@@ -117,6 +170,10 @@ parse_options(int argc, char *argv[])
 
         case OPT_CLEAR:
             dpctl_p.zero_statistics = true;
+            break;
+
+        case OPT_DIRECT_DP_ACCESS:
+            direct_dp_access = true;
             break;
 
         case OPT_MAY_CREATE:
@@ -227,6 +284,9 @@ usage(void *userdata OVS_UNUSED)
            "  --read-only                 do not run read/write commands\n"
            "  --clear                     reset existing stats to zero\n"
            "\nOther options:\n"
+           "  --direct-dp-access          Use direct access to the datapath.\n"
+           "                              WARN: may interfere with or even\n"
+           "                                    break running ovs-vswitchd.\n"
            "  -t, --timeout=SECS          give up after SECS seconds\n"
            "  -h, --help                  display this help message\n"
            "  -V, --version               display version information\n");

@@ -21,6 +21,8 @@
 #include <errno.h>
 
 #include "byteq.h"
+#include "dirs.h"
+#include "daemon.h"
 #include "openvswitch/dynamic-string.h"
 #include "fatal-signal.h"
 #include "openvswitch/json.h"
@@ -33,6 +35,7 @@
 #include "stream.h"
 #include "svec.h"
 #include "timeval.h"
+#include "unixctl.h"
 #include "openvswitch/vlog.h"
 
 VLOG_DEFINE_THIS_MODULE(jsonrpc);
@@ -1350,4 +1353,44 @@ jsonrpc_session_set_backlog_threshold(struct jsonrpc_session *s,
     if (s->rpc) {
         jsonrpc_set_backlog_threshold(s->rpc, max_n_msgs, max_backlog_bytes);
     }
+}
+
+
+struct jsonrpc *
+jsonrpc_connect_to_target(const char *target)
+{
+    struct jsonrpc *client;
+    char *socket_name;
+    int error;
+
+#ifndef _WIN32
+    if (target[0] != '/') {
+        char *pidfile_name;
+        pid_t pid;
+
+        pidfile_name = xasprintf("%s/%s.pid", ovs_rundir(), target);
+        pid = read_pidfile(pidfile_name);
+        if (pid < 0) {
+            ovs_fatal(-pid, "cannot read pidfile \"%s\"", pidfile_name);
+        }
+        free(pidfile_name);
+        socket_name = xasprintf("%s/%s.%ld.ctl",
+                                ovs_rundir(), target, (long int) pid);
+#else
+    /* On windows, if the 'target' contains ':', we make an assumption that
+     * it is an absolute path. */
+    if (!strchr(target, ':')) {
+        socket_name = xasprintf("%s/%s.ctl", ovs_rundir(), target);
+#endif
+    } else {
+        socket_name = xstrdup(target);
+    }
+
+    error = unixctl_client_create(socket_name, &client);
+    if (error) {
+        ovs_fatal(error, "cannot connect to \"%s\"", socket_name);
+    }
+    free(socket_name);
+
+    return client;
 }
