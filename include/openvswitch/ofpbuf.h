@@ -245,7 +245,7 @@ ofpbuf_msgsize(const struct ofpbuf *b)
     return (char *)ofpbuf_tail(b) - (char *)b->msg;
 }
 
-/* Clears any data from 'b'. */
+/* Clears any data from 'b'. Cache test. */
 static inline void ofpbuf_clear(struct ofpbuf *b)
 {
     b->data = b->base;
