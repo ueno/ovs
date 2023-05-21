@@ -584,6 +584,19 @@ ssl_connect(struct stream *stream)
                 stream_set_peer_id(stream, cn);
                 free(cn);
             }
+
+            VLOG_INFO("New SSL connection (%s): %s, options: 0x%"PRIx64
+                      ", KTLS: send: %d, recv: %d",
+                      stream_get_name(&sslv->stream),
+                      SSL_get_version(sslv->ssl),
+                      SSL_get_options(sslv->ssl),
+#ifdef SSL_OP_ENABLE_KTLS
+                      BIO_get_ktls_send(SSL_get_wbio(sslv->ssl)),
+                      BIO_get_ktls_recv(SSL_get_wbio(sslv->ssl))
+#else
+                      0, 0
+#endif
+                     );
             return 0;
         }
     }
@@ -1079,6 +1092,9 @@ do_ssl_init(void)
     long options = SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3;
 #ifdef SSL_OP_IGNORE_UNEXPECTED_EOF
     options |= SSL_OP_IGNORE_UNEXPECTED_EOF;
+#endif
+#ifdef SSL_OP_ENABLE_KTLS
+    options |= SSL_OP_ENABLE_KTLS;
 #endif
     SSL_CTX_set_options(ctx, options);
 
