@@ -468,6 +468,7 @@ tests_ovstest_SOURCES = \
 	tests/test-id-fpool.c \
 	tests/test-json.c \
 	tests/test-jsonrpc.c \
+	tests/test-jsonrpc-benchmark.c \
 	tests/test-list.c \
 	tests/test-lockfile.c \
 	tests/test-multipath.c \
