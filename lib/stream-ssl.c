@@ -724,6 +724,14 @@ ssl_recv(struct stream *stream, void *buffer, size_t n)
     sslv->rx_want = SSL_NOTHING;
 
     if (ret > 0) {
+        if (VLOG_IS_DBG_ENABLED()) {
+            struct ds ds = DS_EMPTY_INITIALIZER;
+
+            ds_put_hex_dump(&ds, buffer, ret, 0, true);
+            VLOG_DBG("%s: read:\n%s",
+                     stream_get_name(&sslv->stream), ds_cstr(&ds));
+            ds_destroy(&ds);
+        }
         return ret;
     } else {
         int error = SSL_get_error(sslv->ssl, ret);
@@ -756,6 +764,15 @@ ssl_do_tx(struct stream *stream)
         }
         sslv->tx_want = SSL_NOTHING;
         if (ret > 0) {
+            if (VLOG_IS_DBG_ENABLED()) {
+                struct ds ds = DS_EMPTY_INITIALIZER;
+
+                ds_put_hex_dump(&ds, sslv->txbuf->data, ret, 0, true);
+                VLOG_DBG("%s: written:\n%s",
+                         stream_get_name(&sslv->stream), ds_cstr(&ds));
+                ds_destroy(&ds);
+            }
+
             ofpbuf_pull(sslv->txbuf, ret);
             if (sslv->txbuf->size == 0) {
                 return 0;
