@@ -1661,7 +1661,7 @@ ovsdb_txn_history_run(struct ovsdb *db)
      * Keeping at least one transaction to avoid sending UUID_ZERO as a last id
      * if all entries got removed due to the size limit. */
     while (db->n_txn_history > 1 &&
-           (db->n_txn_history > 100 ||
+           (db->n_txn_history > 10000 ||
             db->n_txn_history_atoms > db->n_atoms)) {
         struct ovsdb_txn_history_node *txn_h_node = CONTAINER_OF(
                 ovs_list_pop_front(&db->txn_history),
