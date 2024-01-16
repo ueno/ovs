@@ -824,7 +824,7 @@ timeval_warp_cb(struct unixctl_conn *conn,
 }
 
 /* Direct monotonic clock into slow path and advance the current monotonic
- * time by 'msecs' milliseconds directly.  This is for use in unit tests */
+ * time by 'msecs' milliseconds directly.  This is for use in unit tests. */
 void
 timeval_warp(long long int msecs)
 {

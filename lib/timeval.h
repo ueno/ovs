@@ -82,7 +82,7 @@ long long int time_boot_msec(void);
 void timewarp_run(void);
 
 void timeval_stop(void);
-void timeval_warp(long long int);
+void timeval_warp(long long int msecs);
 
 #ifdef  __cplusplus
 }
