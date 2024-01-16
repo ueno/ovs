@@ -1293,7 +1293,7 @@ ovsdb_monitor_get_update(
                         /* Pre-serializing the object to avoid doing this
                          * for every client. */
                         json_serialized =
-                            json_serialized_object_create(json);
+                            json_serialized_object_create_with_yield(json);
                         json_destroy_with_yield(json);
                         json = json_serialized;
                     }

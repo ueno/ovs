@@ -27,5 +27,6 @@ json_destroy_with_yield(struct json *json)
     }
 }
 
+struct json *json_serialized_object_create_with_yield(const struct json *);
 
 #endif /* JSON_H */

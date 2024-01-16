@@ -33,6 +33,12 @@
 #include "util.h"
 #include "uuid.h"
 
+/* Non-public JSSF_* flags.  Must not overlap with public ones defined
+ * in include/openvswitch/json.h. */
+enum {
+    JSSF_YIELD = 1 << 7,
+};
+
 /* The type of a JSON token. */
 enum json_token_type {
     T_EOF = 0,
@@ -188,6 +194,14 @@ json_serialized_object_create(const struct json *src)
 {
     struct json *json = json_create(JSON_SERIALIZED_OBJECT);
     json->string = json_to_string(src, JSSF_SORT);
+    return json;
+}
+
+struct json *
+json_serialized_object_create_with_yield(const struct json *src)
+{
+    struct json *json = json_create(JSON_SERIALIZED_OBJECT);
+    json->string = json_to_string(src, JSSF_SORT | JSSF_YIELD);
     return json;
 }
 
@@ -1682,6 +1696,10 @@ json_serialize_object(const struct shash *object, struct json_serializer *s)
     s->depth++;
     indent_line(s);
 
+    if (s->flags & JSSF_YIELD) {
+        cooperative_multitasking_yield();
+    }
+
     if (s->flags & JSSF_SORT) {
         const struct shash_node **nodes;
         size_t n, i;
@@ -1714,6 +1732,10 @@ json_serialize_array(const struct json_array *array, struct json_serializer *s)
 
     ds_put_char(ds, '[');
     s->depth++;
+
+    if (s->flags & JSSF_YIELD) {
+        cooperative_multitasking_yield();
+    }
 
     if (array->n > 0) {
         indent_line(s);
