@@ -48,7 +48,7 @@ cooperative_multitasking_destroy(void)
  *
  * Updating the value for 'threshold' may be necessary as a consequence of
  * change in runtime configuration or requirements of the part of the program
- * serviced by thecallback.
+ * serviced by the callback.
  *
  * Providing a value of 0 for 'last_run' or 'threshold' will leave the stored
  * value untouched. */
@@ -60,8 +60,7 @@ cooperative_multitasking_set(void (*cb)(void *), void *arg,
     struct cm_entry *cm_entry;
 
     HMAP_FOR_EACH_WITH_HASH (cm_entry, node, hash_pointer((void *) cb, 0),
-                             &cooperative_multitasking_callbacks)
-    {
+                             &cooperative_multitasking_callbacks) {
         if (cm_entry->cb == cb && cm_entry->arg == arg) {
             if (last_run) {
                 cm_entry->last_run = last_run;
@@ -78,13 +77,11 @@ cooperative_multitasking_set(void (*cb)(void *), void *arg,
     cm_entry->cb = cb;
     cm_entry->arg = arg;
     cm_entry->threshold = threshold;
-    cm_entry->last_run = time_msec();
+    cm_entry->last_run = last_run ? last_run : time_msec();
     cm_entry->name = name;
 
     hmap_insert(&cooperative_multitasking_callbacks,
-                &cm_entry->node,
-                hash_pointer(
-                    (void *) cm_entry->cb, 0));
+                &cm_entry->node, hash_pointer((void *) cm_entry->cb, 0));
 }
 
 /* Remove callback identified by 'cb' and 'arg'. */
@@ -94,8 +91,7 @@ cooperative_multitasking_remove(void (*cb)(void *), void *arg)
     struct cm_entry *cm_entry;
 
     HMAP_FOR_EACH_WITH_HASH (cm_entry, node, hash_pointer((void *) cb, 0),
-                             &cooperative_multitasking_callbacks)
-    {
+                             &cooperative_multitasking_callbacks) {
         if (cm_entry->cb == cb && cm_entry->arg == arg) {
             hmap_remove(&cooperative_multitasking_callbacks, &cm_entry->node);
             free(cm_entry);
@@ -110,18 +106,20 @@ cooperative_multitasking_yield_at__(const char *source_location)
     long long int start = time_msec();
     struct cm_entry *cm_entry;
     long long int elapsed;
+    bool warn;
 
     HMAP_FOR_EACH (cm_entry, node, &cooperative_multitasking_callbacks) {
         elapsed = time_msec() - cm_entry->last_run;
 
         if (elapsed >= cm_entry->threshold) {
-            bool wrn = elapsed - cm_entry->threshold > cm_entry->threshold / 8;
+            warn = (elapsed - cm_entry->threshold) > cm_entry->threshold / 8;
 
-            VLOG(wrn ? VLL_WARN : VLL_DBG, "%s: yield for %s(%p): "
+            VLOG(warn ? VLL_WARN : VLL_DBG, "%s: yield for %s(%p): "
                  "elapsed(%lld) >= threshold(%lld), overrun: %lld",
                  source_location, cm_entry->name, cm_entry->arg, elapsed,
                  cm_entry->threshold, elapsed - cm_entry->threshold);
-            if (wrn && VLOG_IS_DBG_ENABLED()) {
+
+            if (warn && VLOG_IS_DBG_ENABLED()) {
                 log_backtrace();
             }
 

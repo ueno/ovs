@@ -101,11 +101,12 @@ struct hmap;
 
 void cooperative_multitasking_destroy(void);
 
-void cooperative_multitasking_set(void (*)(void *), void *,
-                                  long long int, long long int,
-                                  const char *);
+void cooperative_multitasking_set(
+                void (*cb)(void *), void *arg,
+                long long int last_run, long long int threshold,
+                const char *name);
 
-void cooperative_multitasking_remove(void (*)(void *), void *);
+void cooperative_multitasking_remove(void (*cb)(void *), void *arg);
 
 void cooperative_multitasking_yield_at(const char *);
 #define cooperative_multitasking_yield() \
