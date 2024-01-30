@@ -81,6 +81,8 @@ EXTRA_DIST = \
 	.ci/linux-prepare.sh \
 	.ci/osx-build.sh \
 	.ci/osx-prepare.sh \
+	.ci/windows-build.sh \
+	.ci/windows-prepare.sh \
 	.cirrus.yml \
 	.editorconfig \
 	.github/workflows/build-and-test.yml \
@@ -417,6 +419,13 @@ CLEANFILES += flake8-check
 
 -include manpages.mk
 manpages.mk: $(MAN_ROOTS) build-aux/sodepends.py python/ovs_build_helpers/soutil.py
+	@echo PYTHONPATH=${PYTHONPATH}
+	@echo "======================================"
+	@echo "======================================"
+	@echo "======================================"
+	@echo "======================================"
+	@echo "======================================"
+	@echo which $(PYTHON3)
 	@PYTHONPATH=$$PYTHONPATH$(psep)$(srcdir)/python $(PYTHON3) $(srcdir)/build-aux/sodepends.py -I. -I$(srcdir) $(MAN_ROOTS) >$(@F).tmp
 	@if cmp -s $(@F).tmp $@; then \
 	  touch $@; \

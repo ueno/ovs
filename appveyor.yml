@@ -37,21 +37,17 @@ init:
 
 build_script:
 - '"C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvars64.bat"'
-- C:\msys64\usr\bin\bash -lc "mv /bin/link.exe /bin/link_copy.exe"
-# Build pthreads
-- C:\msys64\usr\bin\bash -lc "cd /c/pthreads4w-code && nmake all install"
-- C:\msys64\usr\bin\bash -lc "cd /c/openvswitch_compile && ./boot.sh"
-- C:\msys64\usr\bin\bash -lc "cd /c/openvswitch_compile && ./configure CC=build-aux/cccl LD=\"`which link`\" LIBS=\"-lws2_32 -lShlwapi -liphlpapi -lwbemuuid -lole32 -loleaut32\" --prefix=C:/openvswitch/usr --localstatedir=C:/openvswitch/var --sysconfdir=C:/openvswitch/etc --with-pthread=c:/PTHREADS-BUILT/ --enable-ssl --with-openssl=C:/OpenSSL-Win64 --with-vstudiotarget=\"%CONFIGURATION%\""
-- C:\msys64\usr\bin\bash -lc "cd /c/openvswitch_compile && make -j 4"
-- C:\msys64\usr\bin\bash -lc "cd /c/openvswitch_compile && make datapath_windows_analyze"
-- C:\msys64\usr\bin\bash -lc "cd /c/openvswitch_compile && make install"
-- C:\msys64\usr\bin\bash -lc "cd /c/openvswitch_compile && make windows_installer"
+- C:\msys64\msys2_shell.cmd -defterm -no-start -use-full-path -c "mkdir -p /var/cache/pacman/pkg/"
+- C:\msys64\msys2_shell.cmd -defterm -no-start -use-full-path -c "pacman -S --noconfirm --needed automake autoconf libtool make patch 2>&1"
+- C:\msys64\msys2_shell.cmd -defterm -no-start -use-full-path -c "mv /bin/link.exe /bin/link_copy.exe"
+- ps: C:\msys64\msys2_shell.cmd -defterm -no-start -use-full-path -c "/c/openvswitch_compile/.ci/windows-prepare.sh 2>&1"
+- ps: C:\msys64\msys2_shell.cmd -defterm -no-start -use-full-path -c "/c/openvswitch_compile/.ci/windows-build.sh %CONFIGURATION% 2>&1"
 - cp C:\PTHREADS-BUILT\bin\pthreadVC3.dll C:\openvswitch\usr\bin
 - cp C:\PTHREADS-BUILT\bin\pthreadVC3.dll C:\openvswitch\usr\sbin
 - ps: cp C:\openvswitch_compile\datapath-windows\x64\Win10$env:CONFIGURATION\package\* C:\openvswitch\driver
 - ps: cp C:\openvswitch_compile\datapath-windows\x64\Win10$env:CONFIGURATION\package.cer C:\openvswitch\driver
 - ps: cp C:\openvswitch_compile\datapath-windows\misc\* C:\openvswitch\driver
-- cp c:\openvswitch_compile\windows\ovs-windows-installer\bin\x64\Release\OpenvSwitch.msi c:\OpenvSwitch-%CONFIGURATION%.msi
+- ps: cp c:\openvswitch_compile\windows\ovs-windows-installer\bin\x64\Release\OpenvSwitch.msi c:\OpenvSwitch-%CONFIGURATION%.msi
 
 after_build:
   - ps: 7z a C:\ovs-master-$env:CONFIGURATION.zip C:\openvswitch
