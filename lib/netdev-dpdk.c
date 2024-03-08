@@ -2569,9 +2569,20 @@ netdev_dpdk_prep_hwol_packet(struct netdev_dpdk *dev, struct rte_mbuf *mbuf)
     struct dp_packet *pkt = CONTAINER_OF(mbuf, struct dp_packet, mbuf);
     struct tcp_header *th;
 
-    if (!(mbuf->ol_flags & (RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_L4_MASK
-                            | RTE_MBUF_F_TX_TCP_SEG))) {
-        mbuf->ol_flags &= ~(RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IPV6);
+    const uint64_t all_requests = (RTE_MBUF_F_TX_IP_CKSUM |
+                                   RTE_MBUF_F_TX_L4_MASK  |
+                                   RTE_MBUF_F_TX_OUTER_IP_CKSUM  |
+                                   RTE_MBUF_F_TX_OUTER_UDP_CKSUM |
+                                   RTE_MBUF_F_TX_TCP_SEG);
+    const uint64_t all_marks = (RTE_MBUF_F_TX_IPV4 |
+                                RTE_MBUF_F_TX_IPV6 |
+                                RTE_MBUF_F_TX_OUTER_IPV4 |
+                                RTE_MBUF_F_TX_OUTER_IPV6 |
+                                RTE_MBUF_F_TX_TUNNEL_MASK);
+
+    if (!(mbuf->ol_flags & all_requests)) {
+        /* No offloads requested, no marks should be set. */
+        mbuf->ol_flags &= ~all_marks;
         return true;
     }
 
