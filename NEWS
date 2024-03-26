@@ -4,6 +4,8 @@ Post-v3.3.0
      * Conntrack now supports 'random' flag for selecting ports in a range
        while natting and 'persistent' flag for selection of the IP address
        from a range.
+   - Linux TC offload:
+     * Added support for offloading sFlow via TC sample action.
    - The primary development branch has been renamed from 'master' to 'main'.
      The OVS tree remains hosted on GitHub.
      https://github.com/openvswitch/ovs.git
