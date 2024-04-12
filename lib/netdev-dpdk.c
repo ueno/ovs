@@ -165,6 +165,21 @@ typedef uint16_t dpdk_port_t;
                                    | RTE_ETH_TX_OFFLOAD_UDP_CKSUM    \
                                    | RTE_ETH_TX_OFFLOAD_IPV4_CKSUM)
 
+/* FIXME: Drivers listed below advertise Tx offload features that they
+ * either do not support or do not support correctly.  For these drivers
+ * all the Tx offloads are disabled.  The list needs a re-evaluation
+ * on DPDK version updates. */
+static struct sset tx_offload_naughty_list;
+static const char *tx_offload_naughty_list_arr[] = {
+    /* net_i* drivers below do no support Tx tunnel offload correctly. */
+    "net_i40e",
+    "net_iavf",
+    "net_ice",
+    /* TAP driver doesn't support L4 checksum offload correctly. */
+    "net_tap",
+    /* Bonding must be on the list if there is at least one other driver. */
+    "net_bonding",
+};
 
 static const struct rte_eth_conf port_conf = {
     .rxmode = {
@@ -1344,26 +1359,18 @@ dpdk_eth_dev_init(struct netdev_dpdk *dev)
         dev->hw_ol_features &= ~NETDEV_RX_HW_SCATTER;
     }
 
-    if (!strcmp(info.driver_name, "net_tap")) {
-        /* FIXME: L4 checksum offloading is broken in DPDK net/tap driver.
-         * This workaround can be removed once the fix makes it to a DPDK
-         * LTS release used by OVS. */
-        VLOG_INFO("%s: disabled Tx L4 checksum offloads for a net/tap port.",
-                  netdev_get_name(&dev->up));
-        info.tx_offload_capa &= ~RTE_ETH_TX_OFFLOAD_UDP_CKSUM;
-        info.tx_offload_capa &= ~RTE_ETH_TX_OFFLOAD_TCP_CKSUM;
-    }
-
-    if (!strcmp(info.driver_name, "net_ice")
-        || !strcmp(info.driver_name, "net_i40e")) {
-        /* FIXME: Driver advertises the capability but doesn't seem
-         * to actually support it correctly.  Can remove this once
-         * the driver is fixed on DPDK side. */
-        VLOG_INFO("%s: disabled Tx outer udp checksum offloads for a "
-                  "net/ice or net/i40e port.", netdev_get_name(&dev->up));
-        info.tx_offload_capa &= ~RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM;
-        info.tx_offload_capa &= ~RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO;
-        info.tx_offload_capa &= ~RTE_ETH_TX_OFFLOAD_GENEVE_TNL_TSO;
+    if (sset_contains(&tx_offload_naughty_list, info.driver_name)) {
+        VLOG_INFO("%s: disabled Tx offloads for %s driver.",
+                  netdev_get_name(&dev->up), info.driver_name);
+        info.tx_offload_capa &= ~(RTE_ETH_TX_OFFLOAD_IPV4_CKSUM       |
+                                  RTE_ETH_TX_OFFLOAD_UDP_CKSUM        |
+                                  RTE_ETH_TX_OFFLOAD_TCP_CKSUM        |
+                                  RTE_ETH_TX_OFFLOAD_SCTP_CKSUM       |
+                                  RTE_ETH_TX_OFFLOAD_TCP_TSO          |
+                                  RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM |
+                                  RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM  |
+                                  RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO    |
+                                  RTE_ETH_TX_OFFLOAD_GENEVE_TNL_TSO);
     }
 
     if (info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM) {
@@ -5113,6 +5120,11 @@ netdev_dpdk_class_init(void)
      * needs to be done only once */
     if (ovsthread_once_start(&once)) {
         int ret;
+
+        sset_init(&tx_offload_naughty_list);
+        sset_add_array(&tx_offload_naughty_list,
+                       (char **) tx_offload_naughty_list_arr,
+                       ARRAY_SIZE(tx_offload_naughty_list_arr));
 
         ovs_thread_create("dpdk_watchdog", dpdk_watchdog, NULL);
         unixctl_command_register("netdev-dpdk/set-admin-state",
