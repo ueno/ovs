@@ -2307,10 +2307,34 @@ raft_get_eid(const struct raft *raft, uint64_t index)
     return &raft->snap.eid;
 }
 
-const struct uuid *
+static const struct uuid *
 raft_current_eid(const struct raft *raft)
 {
     return raft_get_eid(raft, raft->log_end - 1);
+}
+
+bool
+raft_precheck_prereq(const struct raft *raft, const struct uuid *prereq)
+{
+    if (!uuid_equals(raft_current_eid(raft), prereq)) {
+        return false;
+    }
+
+    /* Having incomplete commands on a follower means that the leader has
+     * these commands and they will change the prerequisites once added to
+     * the leader's log.
+     *
+     * There is a chance that all these commands will actually fail and the
+     * record with current prerequisites will in fact succeed, but, since
+     * these are our own commands, the chances are low.
+     *
+     * Incomplete commands on a leader will not change the leader's current
+     * 'eid' on commit as they are already part of the leader's log. */
+    if (raft->role != RAFT_LEADER && hmap_count(&raft->commands)) {
+        return false;
+    }
+
+    return true;
 }
 
 static struct raft_command *
