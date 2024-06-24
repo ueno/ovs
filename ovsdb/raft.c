@@ -2313,10 +2313,15 @@ raft_current_eid(const struct raft *raft)
     return raft_get_eid(raft, raft->log_end - 1);
 }
 
+static void log_all_commands(const struct raft *);
+
 bool
 raft_precheck_prereq(const struct raft *raft, const struct uuid *prereq)
 {
     if (!uuid_equals(raft_current_eid(raft), prereq)) {
+        VLOG_INFO(
+            "Prerequisites do not match: expected "UUID_FMT", got "UUID_FMT,
+            UUID_ARGS(prereq), UUID_ARGS(raft_current_eid(raft)));
         return false;
     }
 
@@ -2331,9 +2336,13 @@ raft_precheck_prereq(const struct raft *raft, const struct uuid *prereq)
      * Incomplete commands on a leader will not change the leader's current
      * 'eid' on commit as they are already part of the leader's log. */
     if (raft->role != RAFT_LEADER && hmap_count(&raft->commands)) {
+        VLOG_INFO("Follower still has incomplete commands on prereq "UUID_FMT,
+                  UUID_ARGS(prereq));
+        log_all_commands(raft);
         return false;
     }
 
+    VLOG_INFO("Prerequisites "UUID_FMT" success!", UUID_ARGS(prereq));
     return true;
 }
 
@@ -2404,7 +2413,7 @@ raft_command_initiate(struct raft *raft,
 }
 
 static void
-log_all_commands(struct raft *raft)
+log_all_commands(const struct raft *raft)
 {
     if (!VLOG_IS_DBG_ENABLED()) {
         return;
