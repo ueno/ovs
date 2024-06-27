@@ -1860,10 +1860,6 @@ raft_start_election(struct raft *raft, bool is_prevote,
     /* Leadership transfer doesn't use pre-vote. */
     ovs_assert(!is_prevote || !leadership_transfer);
 
-    if (raft->leaving) {
-        return;
-    }
-
     struct raft_server *me = raft_find_server(raft, &raft->sid);
     if (!me) {
         return;
@@ -1987,6 +1983,12 @@ raft_conn_should_stay_open(struct raft *raft, struct raft_conn *conn)
      * that are supposed to be part of the cluster we're joining. */
     if (raft->joining && sset_contains(&raft->remote_addresses,
                                        jsonrpc_session_get_name(conn->js))) {
+        return true;
+    }
+
+    /* Keep connection to a leaving server until RemoveServerReply is sent. */
+    if (raft->remove_server
+        && uuid_equals(&conn->sid, &raft->remove_server->sid)) {
         return true;
     }
 
@@ -2132,6 +2134,12 @@ raft_run(struct raft *raft)
     }
 
     if (raft->leaving && time_msec() >= raft->leave_timeout) {
+        if (raft->role == RAFT_LEADER) {
+            /* We're leaving the cluster, give up the leadership now. */
+            raft_transfer_leadership(raft,
+                                     "this server is leaving the cluster");
+            raft_become_follower(raft);
+        }
         raft_send_remove_server_requests(raft);
     }
 
@@ -2397,7 +2405,7 @@ raft_command_execute__(struct raft *raft, const struct json *data,
                        const struct json *servers, uint64_t election_timer,
                        const struct uuid *prereq, struct uuid *result)
 {
-    if (raft->joining || raft->leaving || raft->left || raft->failed) {
+    if (raft->joining || raft->left || raft->failed) {
         return raft_command_create_completed(RAFT_CMD_SHUTDOWN);
     }
 
