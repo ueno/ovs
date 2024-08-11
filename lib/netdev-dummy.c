@@ -675,6 +675,20 @@ netdev_dummy_run(const struct netdev_class *netdev_class)
 }
 
 static void
+netdev_dummy_rx_wait(const struct netdev_dummy *dummy)
+    OVS_REQUIRES(dummy->mutex)
+{
+    struct netdev_rxq_dummy *rx;
+
+    LIST_FOR_EACH (rx, node, &dummy->rxes) {
+        if (rx->recv_queue_len) {
+            poll_immediate_wake();
+            break;
+        }
+    }
+}
+
+static void
 netdev_dummy_wait(const struct netdev_class *netdev_class)
 {
     struct netdev_dummy *dev;
@@ -686,6 +700,7 @@ netdev_dummy_wait(const struct netdev_class *netdev_class)
         }
         ovs_mutex_lock(&dev->mutex);
         dummy_packet_conn_wait(&dev->conn);
+        netdev_dummy_rx_wait(dev);
         ovs_mutex_unlock(&dev->mutex);
     }
     ovs_mutex_unlock(&dummy_list_mutex);
