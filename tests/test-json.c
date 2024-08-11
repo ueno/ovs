@@ -100,9 +100,13 @@ test_json_equal(const struct json *a, const struct json *b,
         return;
 
     case JSON_STRING:
+        ovs_assert(json_string(a) != json_string(b));
+        ovs_assert(!strcmp(json_string(a), json_string(b)));
+        return;
+
     case JSON_SERIALIZED_OBJECT:
-        ovs_assert(a->string != b->string);
-        ovs_assert(!strcmp(a->string, b->string));
+        ovs_assert(a->str_ptr != b->str_ptr);
+        ovs_assert(!strcmp(a->str_ptr, b->str_ptr));
         return;
 
     case JSON_NULL:
@@ -154,7 +158,7 @@ print_test_and_free_json(struct json *json)
 {
     bool ok;
     if (json->type == JSON_STRING) {
-        printf("error: %s\n", json->string);
+        printf("error: %s\n", json_string(json));
         ok = false;
     } else {
         char *s = json_to_string(json, JSSF_SORT | (pretty ? JSSF_PRETTY : 0));
