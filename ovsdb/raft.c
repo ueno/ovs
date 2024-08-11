@@ -436,7 +436,7 @@ raft_alloc(void)
     hmap_node_nullify(&raft->hmap_node);
     hmap_init(&raft->servers);
     raft->log_start = raft->log_end = 1;
-    raft->role = RAFT_FOLLOWER;
+    raft->role = RAFT_FOLLOWER; VLOG_INFO("%s: FOLLOWER", __func__);
     sset_init(&raft->remote_addresses);
     raft->join_timeout = LLONG_MAX;
     ovs_list_init(&raft->waiters);
@@ -1860,10 +1860,6 @@ raft_start_election(struct raft *raft, bool is_prevote,
     /* Leadership transfer doesn't use pre-vote. */
     ovs_assert(!is_prevote || !leadership_transfer);
 
-    if (raft->leaving) {
-        return;
-    }
-
     struct raft_server *me = raft_find_server(raft, &raft->sid);
     if (!me) {
         return;
@@ -1876,7 +1872,7 @@ raft_start_election(struct raft *raft, bool is_prevote,
     ovs_assert(raft->role != RAFT_LEADER);
 
     raft->leader_sid = UUID_ZERO;
-    raft->role = RAFT_CANDIDATE;
+    raft->role = RAFT_CANDIDATE; VLOG_INFO("%s: CANDIDATE", __func__);
     raft->prevote_passed = !is_prevote;
 
     if (is_prevote || leadership_transfer) {
@@ -1987,6 +1983,12 @@ raft_conn_should_stay_open(struct raft *raft, struct raft_conn *conn)
      * that are supposed to be part of the cluster we're joining. */
     if (raft->joining && sset_contains(&raft->remote_addresses,
                                        jsonrpc_session_get_name(conn->js))) {
+        return true;
+    }
+
+    /* Keep the connection until we send a RemoveServerReply. */
+    if (raft->remove_server
+        && uuid_equals(&conn->sid, &raft->remove_server->sid)) {
         return true;
     }
 
@@ -2116,6 +2118,8 @@ raft_run(struct raft *raft)
                     count ++;
                 }
             }
+            VLOG_INFO("Replied: %d out of %d servers",
+                      count, (int) hmap_count(&raft->servers));
             if (count >= hmap_count(&raft->servers) / 2) {
                 HMAP_FOR_EACH (server, hmap_node, &raft->servers) {
                     server->replied = false;
@@ -2132,6 +2136,11 @@ raft_run(struct raft *raft)
     }
 
     if (raft->leaving && time_msec() >= raft->leave_timeout) {
+        if (raft->role == RAFT_LEADER) {
+            raft_transfer_leadership(raft,
+                                     "this server is leaving the cluster");
+            raft_become_follower(raft);
+        }
         raft_send_remove_server_requests(raft);
     }
 
@@ -2440,7 +2449,7 @@ raft_command_execute__(struct raft *raft, const struct json *data,
                        const struct json *servers, uint64_t election_timer,
                        const struct uuid *prereq, struct uuid *result)
 {
-    if (raft->joining || raft->leaving || raft->left || raft->failed) {
+    if (raft->joining || raft->left || raft->failed) {
         return raft_command_create_completed(RAFT_CMD_SHUTDOWN);
     }
 
@@ -2778,7 +2787,7 @@ raft_become_follower(struct raft *raft)
         return;
     }
 
-    raft->role = RAFT_FOLLOWER;
+    raft->role = RAFT_FOLLOWER; VLOG_INFO("%s: FOLLOWER", __func__);
     raft_reset_election_timer(raft);
 
     /* Notify clients about lost leadership.
@@ -2906,7 +2915,7 @@ raft_become_leader(struct raft *raft)
                  raft->n_votes, hmap_count(&raft->servers));
 
     ovs_assert(raft->role != RAFT_LEADER);
-    raft->role = RAFT_LEADER;
+    raft->role = RAFT_LEADER; VLOG_INFO("%s: LEADER", __func__);
     raft->election_won = time_msec();
     raft_set_leader(raft, &raft->sid);
     raft_reset_election_timer(raft);
@@ -3367,7 +3376,7 @@ raft_update_leader(struct raft *raft, const struct uuid *sid)
          * least as large as the candidate's current term, then the
          * candidate recognizes the leader as legitimate and returns to
          * follower state. */
-        raft->role = RAFT_FOLLOWER;
+        raft->role = RAFT_FOLLOWER; VLOG_INFO("%s: FOLLOWER", __func__);
     }
     return true;
 }
@@ -4140,6 +4149,14 @@ raft_handle_remove_server_request(struct raft *raft,
                                      false, RAFT_SERVER_CANCELED);
         hmap_remove(&raft->add_servers, &target->hmap_node);
         raft_server_destroy(target);
+        return;
+    }
+
+    /* Check for a server being removed right now. */
+    if (raft->remove_server
+        && uuid_equals(&rq->sid, &raft->remove_server->sid)) {
+        raft_send_remove_server_reply(raft, rq,
+                                      false, RAFT_SERVER_IN_PROGRESS);
         return;
     }
 
