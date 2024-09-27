@@ -71,6 +71,8 @@ function clang_analyze()
         popd
     else
         # Only do the compare on the none cache builds.
+        ls -alh ./base-clang-analyzer-results/
+        ls -alh ./clang-analyzer-results
         sarif --check note diff ./base-clang-analyzer-results \
                                 ./clang-analyzer-results
     fi;
