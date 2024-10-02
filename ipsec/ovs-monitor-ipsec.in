@@ -271,6 +271,9 @@ conn prevent_unencrypted_vxlan
 
         return conns
 
+    def get_loaded_conns(self):
+        return self.get_active_conns()
+
     def config_init(self):
         self.conf_file = open(self.IPSEC_CONF, "w")
         self.secrets_file = open(self.IPSEC_SECRETS, "w")
@@ -603,6 +606,22 @@ conn prevent_unencrypted_vxlan
                         "--config", self.IPSEC_CONF, "--rereadsecrets"])
         tunnels = set(monitor.tunnels.keys())
 
+        # Delete half-loaded connections.
+        conns_dict = self.get_loaded_conns()
+        for ifname, conns in conns_dict.items():
+            tunnel = monitor.tunnels.get(ifname)
+            if not tunnel:
+                continue
+
+            if set(conns.keys()) == set(monitor.get_conn_names(ifname)):
+                continue
+
+            for conn in conns:
+                vlog.info("%s is half-loaded, removing" % conn)
+                subprocess.call(self.IPSEC_AUTO + ["--ctlsocket",
+                                self.IPSEC_CTL, "--config",
+                                self.IPSEC_CONF, "--delete", conn])
+
         # Delete old connections
         conns_dict = self.get_active_conns()
         for ifname, conns in conns_dict.items():
@@ -635,16 +654,9 @@ conn prevent_unencrypted_vxlan
 
         # Activate new connections
         for name in tunnels:
-            ver = monitor.tunnels[name].version
-
-            if monitor.tunnels[name].conf["tunnel_type"] == "gre":
-                conn = "%s-%s" % (name, ver)
+            for conn in monitor.get_conn_names(name):
+                vlog.info("Starting ipsec connection %s" % conn)
                 self._start_ipsec_connection(conn)
-            else:
-                conn_in = "%s-in-%s" % (name, ver)
-                conn_out = "%s-out-%s" % (name, ver)
-                self._start_ipsec_connection(conn_in)
-                self._start_ipsec_connection(conn_out)
 
         # Update shunt policy if changed
         if monitor.conf_in_use["skb_mark"] != monitor.conf["skb_mark"]:
@@ -691,6 +703,7 @@ conn prevent_unencrypted_vxlan
                             "--delete",
                             "--asynchronous", "prevent_unencrypted_vxlan"])
             monitor.conf_in_use["skb_mark"] = monitor.conf["skb_mark"]
+        vlog.info("Refreshing is done.")
 
     def get_active_conns(self):
         """This function parses output from 'ipsec status' command.
@@ -727,6 +740,41 @@ conn prevent_unencrypted_vxlan
 
         return conns
 
+    def get_loaded_conns(self):
+        """This function parses output from 'ipsec status' command.
+        It returns dictionary where <key> is interface name (as in OVSDB)
+        and <value> is another dictionary.  This another dictionary
+        uses LibreSwan connection name as <key> and more detailed
+        sample line from the parsed outpus as <value>. """
+
+        conns = {}
+        proc = subprocess.Popen([self.IPSEC, 'status', '--ctlsocket',
+                                self.IPSEC_CTL], stdout=subprocess.PIPE)
+
+        while True:
+            line = proc.stdout.readline().strip().decode()
+            if line == '':
+                break
+
+            m = re.search(r"^\d+ \"(.*)\":.*", line)
+            if not m:
+                continue
+
+            conn = m.group(1)
+            m = re.match(r"(.*)(-in-\d+|-out-\d+)", conn)
+            if not m:
+                # GRE connections have format <iface>-<ver>
+                m = re.match(r"(.*)(-\d+)", conn)
+            if not m:
+                continue
+
+            ifname = m.group(1)
+            if ifname not in conns:
+                conns[ifname] = {}
+            (conns[ifname])[conn] = line
+
+        return conns
+
     def _start_ipsec_connection(self, conn):
         # In a corner case, LibreSwan daemon restarts for some reason and
         # the "ipsec auto --start" command is lost. Just retry to make sure
@@ -741,6 +789,14 @@ conn prevent_unencrypted_vxlan
                                     stderr=subprocess.PIPE)
             perr = str(proc.stderr.read())
             pout = str(proc.stdout.read())
+
+            if proc.returncode:
+                vlog.warn("Non-zero return value (%d) while starting %s"
+                          % (proc.returncode, conn))
+            if perr != str(b''):
+                vlog.warn("stderr: %s" % perr)
+                vlog.warn("stdout: %s" % pout)
+
             if not re.match(r".*Connection refused.*", perr) and \
                     not re.match(r".*need --listen.*", pout):
                 break
@@ -1185,6 +1241,40 @@ class IPsecMonitor(object):
             s += tunnel.show(policies, securities, conns)
         unix_conn.reply(s)
 
+    def get_conn_names(self, ifname):
+        conns = []
+
+        tunnel = self.tunnels.get(ifname)
+        ver = tunnel.version
+
+        if tunnel.conf["tunnel_type"] == "gre":
+            conns.append("%s-%s" % (ifname, ver))
+        else:
+            conns.append("%s-in-%s" % (ifname, ver))
+            conns.append("%s-out-%s" % (ifname, ver))
+
+        return conns
+
+    def need_to_reconcile(self):
+        conns_dict = self.ike_helper.get_loaded_conns()
+        for ifname, tunnel in self.tunnels.items():
+            if ifname not in conns_dict:
+                vlog.info("Connection for port %s is not loaded, "
+                          "need to reconcile" % ifname)
+                return True
+
+            existing_conns = conns_dict.get(ifname)
+            desired_conns = self.get_conn_names(ifname)
+
+            if set(existing_conns.keys()) != set(desired_conns):
+                vlog.info("Connections for port %s %s do not match desired %s"
+                          ", need to reconcile" % (ifname,
+                                                   list(existing_conns.keys()),
+                                                   desired_conns))
+                return True
+
+        return False
+
     def run(self):
         """This function runs state machine that represents whole
         IPsec configuration (i.e. merged together from individual
@@ -1216,7 +1306,7 @@ class IPsecMonitor(object):
                 self.ike_helper.clear_tunnel_state(self.tunnels[name])
             del self.tunnels[name]
 
-        if needs_refresh:
+        if needs_refresh or self.need_to_reconcile():
             self.ike_helper.refresh(self)
 
     def _get_cn_from_cert(self, cert):
@@ -1393,6 +1483,7 @@ def main():
         poller = ovs.poller.Poller()
         unixctl_server.wait(poller)
         idl.wait(poller)
+        poller.timer_wait(5000)
         poller.block()
 
     unixctl_server.close()
