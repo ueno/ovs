@@ -776,35 +776,32 @@ conn prevent_unencrypted_vxlan
         return conns
 
     def _start_ipsec_connection(self, conn):
-        # In a corner case, LibreSwan daemon restarts for some reason and
-        # the "ipsec auto --start" command is lost. Just retry to make sure
-        # the command is received by LibreSwan.
-        while True:
-            proc = subprocess.Popen(self.IPSEC_AUTO +
-                                    ["--config", self.IPSEC_CONF,
-                                    "--ctlsocket", self.IPSEC_CTL,
-                                    "--start",
-                                    "--asynchronous", conn],
-                                    stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE)
-            perr = str(proc.stderr.read())
-            pout = str(proc.stdout.read())
+        proc = subprocess.Popen(self.IPSEC_AUTO +
+                                ["--config", self.IPSEC_CONF,
+                                "--ctlsocket", self.IPSEC_CTL,
+                                "--start",
+                                "--asynchronous", conn],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE)
+        vlog.dbg("Running: %s" % proc.args)
+        try:
+            pout, perr = proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            vlog.warn("Connection start timed out for %s" % conn)
+            proc.kill()
+            try:
+                pout, perr = proc.communicate(timeout=30)
+            except subprocess.TimeoutExpired:
+                vlog.warn("Killed %s did not terminate" % proc.args)
+                pout, perr = b'', b''
 
-            if proc.returncode:
-                vlog.warn("Non-zero return value (%d) while starting %s"
-                          % (proc.returncode, conn))
-            if perr != str(b''):
-                vlog.warn("stderr: %s" % perr)
-                vlog.warn("stdout: %s" % pout)
-
-            if not re.match(r".*Connection refused.*", perr) and \
-                    not re.match(r".*need --listen.*", pout):
-                break
-
-        if re.match(r".*[F|f]ailed to initiate connection.*", pout):
-            vlog.err('Failed to initiate connection through'
-                    ' Interface %s.\n' % (conn.split('-')[0]))
-            vlog.err(pout)
+        if proc.returncode or len(perr) or re.match(
+                r".*[F|f]ailed to initiate connection.*", str(pout)):
+            vlog.warn("Error while starting %s, return code: %d"
+                      % (conn, proc.returncode))
+            vlog.warn("cmdline: %s" % proc.args)
+            vlog.warn("stderr: %s" % perr)
+            vlog.warn("stdout: %s" % pout)
 
     def _nss_clear_database(self):
         """Remove all OVS IPsec related state from the NSS database"""
