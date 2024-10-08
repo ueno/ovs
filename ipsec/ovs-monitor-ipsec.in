@@ -787,13 +787,16 @@ conn prevent_unencrypted_vxlan
         try:
             pout, perr = proc.communicate(timeout=30)
         except subprocess.TimeoutExpired:
-            vlog.warn("Connection start timed out for %s" % conn)
+            vlog.warn("Connection start timed out for %s, removing." % conn)
+            pout, perr = b'', b''
             proc.kill()
             try:
-                pout, perr = proc.communicate(timeout=30)
+                subprocess.call(self.IPSEC_AUTO + ["--ctlsocket",
+                                self.IPSEC_CTL, "--config",
+                                self.IPSEC_CONF, "--delete", conn],
+                                timeout=30)
             except subprocess.TimeoutExpired:
-                vlog.warn("Killed %s did not terminate" % proc.args)
-                pout, perr = b'', b''
+                vlog.warn("Unable to delete timed out %s." % conn)
 
         if proc.returncode or len(perr) or re.match(
                 r".*[F|f]ailed to initiate connection.*", str(pout)):
