@@ -756,7 +756,7 @@ conn prevent_unencrypted_vxlan
             if line == '':
                 break
 
-            m = re.search(r"^\d+ \"(.*)\":.*", line)
+            m = re.search(r"\"(.*)\":.*===.*", line)
             if not m:
                 continue
 
