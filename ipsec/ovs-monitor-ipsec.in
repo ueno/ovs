@@ -607,8 +607,8 @@ conn prevent_unencrypted_vxlan
         tunnels = set(monitor.tunnels.keys())
 
         # Delete half-loaded connections.
-        conns_dict = self.get_loaded_conns()
-        for ifname, conns in conns_dict.items():
+        loaded_conns_dict = self.get_loaded_conns()
+        for ifname, conns in loaded_conns_dict.items():
             tunnel = monitor.tunnels.get(ifname)
             if not tunnel:
                 continue
@@ -644,7 +644,8 @@ conn prevent_unencrypted_vxlan
                     vlog.err("%s does not contain version number")
                     continue
 
-                if not tunnel or tunnel.version != ver:
+                if not tunnel or tunnel.version != ver \
+                   or ifname not in loaded_conns_dict:
                     vlog.info("%s is outdated %u" % (conn, ver))
                     subprocess.call(self.IPSEC_AUTO + ["--ctlsocket",
                                     self.IPSEC_CTL, "--config",
