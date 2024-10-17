@@ -786,7 +786,7 @@ conn prevent_unencrypted_vxlan
                                 stderr=subprocess.PIPE)
         vlog.dbg("Running: %s" % proc.args)
         try:
-            pout, perr = proc.communicate(timeout=30)
+            pout, perr = proc.communicate(timeout=120)
         except subprocess.TimeoutExpired:
             vlog.warn("Connection start timed out for %s, removing." % conn)
             pout, perr = b'', b''
@@ -795,7 +795,7 @@ conn prevent_unencrypted_vxlan
                 subprocess.call(self.IPSEC_AUTO + ["--ctlsocket",
                                 self.IPSEC_CTL, "--config",
                                 self.IPSEC_CONF, "--delete", conn],
-                                timeout=30)
+                                timeout=120)
             except subprocess.TimeoutExpired:
                 vlog.warn("Unable to delete timed out %s." % conn)
 
