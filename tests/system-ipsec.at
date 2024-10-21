@@ -11,7 +11,10 @@ m4_define([IPSEC_SETUP_UNDERLAY],
 m4_define([START_PLUTO], [
   rm -f $ovs_base/$1/pluto.pid
   mkdir -p $ovs_base/$1/ipsec.d
-  touch $ovs_base/$1/ipsec.conf
+  cat > $ovs_base/$1/ipsec.conf <<'EOF'
+config setup
+  plutodebug=all
+EOF
   touch $ovs_base/$1/secrets
   ipsec initnss --nssdir $ovs_base/$1/ipsec.d
   NS_CHECK_EXEC([$1], [ipsec pluto --config $ovs_base/$1/ipsec.conf \
