@@ -790,6 +790,10 @@ conn prevent_unencrypted_vxlan
             pout, perr = proc.communicate(timeout=120)
         except subprocess.TimeoutExpired:
             vlog.warn("Connection start timed out for %s, removing." % conn)
+            status = subprocess.run(["/usr/sbin/ip", "x", "s"], capture_output=True)
+            vlog.info("ip x s: stdout=\"%s\", stderr=\"%s\"" % (status.stdout, status.stderr))
+            status = subprocess.run(["/usr/sbin/ip", "x", "p"], capture_output=True)
+            vlog.info("ip x p: stdout=\"%s\", stderr=\"%s\"" % (status.stdout, status.stderr))
             pout, perr = b'', b''
             proc.kill()
             try:
