@@ -18,6 +18,16 @@ m4_define([START_PLUTO], [
         --ipsecdir $ovs_base/$1 --nssdir $ovs_base/$1/ipsec.d \
         --logfile $ovs_base/$1/pluto.log --secretsfile $ovs_base/$1/secrets \
         --rundir $ovs_base/$1], [0], [], [stderr])
+ while test -z "$(cat $ovs_base/$1/pluto.pid)"; do
+     sleep 1
+ done
+ gdb -p $(cat $ovs_base/$1/pluto.pid) <<< "
+continue
+backtrace
+backtrace full
+quit
+y
+" >> $ovs_base/$1/gdb.out 2>&1 &
 ])
 
 dnl IPSEC_ADD_NODE([namespace], [device], [address], [peer address]))
