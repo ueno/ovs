@@ -460,7 +460,7 @@ m4_for([id], [1], NODES, [1], [
     date
     AT_CHECK([ipsec --rundir $ovs_base/node-id status 2>&1 | grep -E "whack|Total"],
              [ignore], [stdout])
-    if grep 'is Pluto running?' stdout; then
+    if grep -E 'is Pluto running?|refused' stdout; then
       echo "node-id: Pluto died, restarting..."
       START_PLUTO([node-id])
     else
@@ -476,13 +476,18 @@ m4_for([id], [1], NODES, [1], [
   done
 ])
 
-AT_CHECK([ipsec auto --ctlsocket $ovs_base/node-1/pluto.ctl \
+auto=
+if ipsec --version | grep -q 'Libreswan 4'; then
+    auto=auto
+fi
+
+AT_CHECK([ipsec $auto --ctlsocket $ovs_base/node-1/pluto.ctl \
                       --config $ovs_base/node-1/ipsec.conf \
                       --delete tun-5-out-1], [0], [stdout])
-AT_CHECK([ipsec auto --ctlsocket $ovs_base/node-1/pluto.ctl \
+AT_CHECK([ipsec $auto --ctlsocket $ovs_base/node-1/pluto.ctl \
                       --config $ovs_base/node-1/ipsec.conf \
                       --delete tun-2-in-1], [0], [stdout])
-AT_CHECK([ipsec auto --ctlsocket $ovs_base/node-1/pluto.ctl \
+AT_CHECK([ipsec $auto --ctlsocket $ovs_base/node-1/pluto.ctl \
                       --config $ovs_base/node-1/ipsec.conf \
                       --delete tun-2-out-1], [0], [stdout])
 
@@ -498,7 +503,7 @@ m4_for([id], [1], NODES, [1], [
     date
     AT_CHECK([ipsec --rundir $ovs_base/node-id status 2>&1 | grep -E "whack|Total"],
              [ignore], [stdout])
-    if grep 'is Pluto running?' stdout; then
+    if grep -E 'is Pluto running?|refused' stdout; then
       echo "node-id: Pluto died, restarting..."
       START_PLUTO([node-id])
     else
