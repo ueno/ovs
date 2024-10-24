@@ -486,7 +486,7 @@ m4_for([id], [1], NODES, [1], [
 ])
 
 auto=
-if ipsec --version | grep -q 'Libreswan 4'; then
+if test $(ipsec --version | sed 's/.*Libreswan \([[0-9]]*\).*/\1/') -lt 5; then
     auto=auto
 fi
 
