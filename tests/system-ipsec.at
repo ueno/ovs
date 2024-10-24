@@ -81,7 +81,9 @@ m4_define([IPSEC_ADD_NODE],
   on_exit "kill `cat $ovs_base/$1/ovs-monitor-ipsec.pid`"
 
   dnl Set up OVS bridge
-  NS_EXEC([$1], [ovs-vsctl --db unix:$ovs_base/$1/db.sock add-br br-ipsec])]
+  NS_CHECK_EXEC([$1],
+    [ovs-vsctl --db unix:$ovs_base/$1/db.sock add-br br-ipsec \
+               -- set-controller br-ipsec punix:$ovs_base/br-ipsec.$1.mgmt])]
 )
 m4_define([IPSEC_ADD_NODE_LEFT], [IPSEC_ADD_NODE(left, p0, $1, $2)])
 m4_define([IPSEC_ADD_NODE_RIGHT], [IPSEC_ADD_NODE(right, p1, $1, $2)])
@@ -133,9 +135,10 @@ m4_define([IPSEC_STATUS_LOADED], [
 dnl IPSEC_STATUS_ACTIVE([])
 dnl
 dnl Get number of active connections from ipsec status
-m4_define([IPSEC_STATUS_ACTIVE], [ipsec --rundir $ovs_base/$1 status | \
+m4_define([IPSEC_STATUS_ACTIVE], [
+           ipsec --rundir $ovs_base/$1 status | \
            grep "Total IPsec connections" | \
-           sed 's/[[0-9]]* *Total IPsec connections: loaded \([[0-2]]\), active \([[0-2]]\).*/\2/m'])
+           sed 's/[[0-9]]* *Total IPsec connections: loaded \([[0-9]]*\), active \([[0-9]]*\).*/\2/m'])
 
 dnl CHECK_ESP_TRAFFIC()
 dnl
@@ -436,8 +439,10 @@ m4_for([id], [1], NODES, [1], [
   AT_CHECK([ovs-pki -b -d ${ovs_base} -l ${ovs_base}/ovs-pki.log self-sign node-id], [0], [stdout])
   AT_CHECK(OVS_VSCTL([node-id], set Open_vSwitch . \
       other_config:certificate=${ovs_base}/node-id-cert.pem \
-      other_config:private_key=${ovs_base}/node-id-privkey.pem),
+      other_config:private_key=${ovs_base}/node-id-privkey.pem \
+      -- set bridge br-ipsec other-config:hwaddr=f2:ff:00:00:00:id),
       [0], [ignore], [ignore])
+
   on_exit "ipsec --rundir $ovs_base/node-id status > $ovs_base/node-id/status"
 ])
 
@@ -451,6 +456,10 @@ m4_for([LEFT], [1], NODES, [1], [
         [0], [ignore], [ignore])
     fi
 ])])
+
+on_exit "grep -E 'timed out|outdated' $ovs_base/node-*/ovs-monitor-ipsec.log"
+on_exit "grep -E 'netlink response|ABORT' $ovs_base/node-*/pluto.log"
+
 
 m4_for([id], [1], NODES, [1], [
   echo "================== node-id ========================="
@@ -519,8 +528,55 @@ m4_for([id], [1], NODES, [1], [
   done
 ])
 
-grep -E 'timed out|outdated' $ovs_base/node-*/ovs-monitor-ipsec.log
-grep -E 'ABORT' $ovs_base/node-*/pluto.log
+dnl Turn off IPv6 and add static ARP entries for all namespaces to avoid
+dnl any broadcast / multicast traffic that would otherwise be multiplied
+dnl by each node creating a traffic storm.  Add specific OpenFlow rules
+dnl to forward traffic to exact destinations without any MAC learning.
+m4_for([LEFT], [1], NODES, [1], [
+  NS_CHECK_EXEC([node-LEFT], [sysctl -w net.ipv6.conf.all.disable_ipv6=1],
+                [0], [ignore])
+  AT_CHECK([ovs-ofctl del-flows unix:$ovs_base/br-ipsec.node-LEFT.mgmt])
+  AT_CHECK([ovs-ofctl add-flow unix:$ovs_base/br-ipsec.node-LEFT.mgmt \
+                  "dl_dst=f2:ff:00:00:00:LEFT actions=LOCAL"])
+  m4_for([RIGHT], [1], NODES, [1], [
+    if test LEFT -ne RIGHT; then
+      NS_CHECK_EXEC([node-LEFT],
+        [ip neigh add 192.0.0.RIGHT lladdr f2:ff:00:00:00:RIGHT dev br-ipsec])
+      AT_CHECK([ovs-ofctl add-flow unix:$ovs_base/br-ipsec.node-LEFT.mgmt \
+                  "dl_dst=f2:ff:00:00:00:RIGHT actions=tun-RIGHT"])
+    fi
+  ])
+])
+
+
+m4_for([id], [1], NODES, [1], [
+  echo "================== node-id ========================="
+  NS_CHECK_EXEC([node-id], [ip addr add 192.0.0.id/24 dev br-ipsec])
+  NS_CHECK_EXEC([node-id], [ip link set dev br-ipsec up])
+
+  dnl Capture any underlay esp packets
+  dnl OVS_DAEMONIZE([tcpdump -l -nn -i ovs-p-id esp > $ovs_base/node-id/tcpdump.log],
+  dnl               [tcpdump-id.pid])
+
+  dnl echo Waiting for all loaded connections to be active...
+  dnl OVS_WAIT_UNTIL([test "$(IPSEC_STATUS_LOADED(node-id))" \
+  dnl                           -eq "$(IPSEC_STATUS_ACTIVE(node-id))"])
+])
+
+m4_for([LEFT], [1], NODES, [1], [
+  m4_for([RIGHT], [1], NODES, [1], [
+    if test LEFT -ne RIGHT; then
+      echo "====== ping: node-LEFT --> node-RIGHT =========="
+      dnl Ping without checking in case connection will recover after the
+      dnl first packet.
+      NS_CHECK_EXEC([node-LEFT], [ping -q -c 1 -W 2 192.0.0.RIGHT | FORMAT_PING],
+                    [ignore], [stdout])
+      dnl Now check.  If this one fails, there is no actual connectivity.
+      NS_CHECK_EXEC([node-LEFT], [ping -q -c 3 -i 0.1 -W 2 192.0.0.RIGHT | FORMAT_PING], [0], [dnl
+3 packets transmitted, 3 received, 0% packet loss, time 0ms
+])
+    fi
+])])
 
 OVS_TRAFFIC_VSWITCHD_STOP()
 AT_CLEANUP
