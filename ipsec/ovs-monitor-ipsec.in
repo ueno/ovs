@@ -717,12 +717,18 @@ conn prevent_unencrypted_vxlan
         conns = {}
         proc = subprocess.Popen([self.IPSEC, 'status', '--ctlsocket',
                                 self.IPSEC_CTL], stdout=subprocess.PIPE)
+        try:
+            pout, perr = proc.communicate(timeout=120)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            pout = b''
+            vlog.warn("ipsec status timed out")
 
-        while True:
-            line = proc.stdout.readline().strip().decode()
-            if line == '':
-                break
+        if proc.returncode:
+            vlog.warn("ipsec status error, return code: %d"
+                      % proc.returncode)
 
+        for line in pout.decode().splitlines():
             m = re.search(r"#\d+: \"(.*)\".*", line)
             if not m:
                 continue
@@ -752,12 +758,18 @@ conn prevent_unencrypted_vxlan
         conns = {}
         proc = subprocess.Popen([self.IPSEC, 'status', '--ctlsocket',
                                 self.IPSEC_CTL], stdout=subprocess.PIPE)
+        try:
+            pout, perr = proc.communicate(timeout=120)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            pout = b''
+            vlog.warn("ipsec status timed out")
 
-        while True:
-            line = proc.stdout.readline().strip().decode()
-            if line == '':
-                break
+        if proc.returncode:
+            vlog.warn("ipsec status error, return code: %d"
+                      % proc.returncode)
 
+        for line in pout.decode().splitlines():
             m = re.search(r"\"(.*)\":.*===.*", line)
             if not m:
                 continue
