@@ -401,6 +401,7 @@ conn %%default
     ike=aes_gcm256-sha2_256
     esp=aes_gcm256
     ikev2=insist
+    retransmit-timeout=30
 
 """ % (FILE_HEADER)
 
