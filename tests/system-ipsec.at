@@ -485,9 +485,10 @@ m4_for([id], [1], NODES, [1], [
   done
 ])
 
-auto=
-if test $(ipsec --version | sed 's/.*Libreswan \([[0-9]]*\).*/\1/') -lt 5; then
-    auto=auto
+AT_CHECK([ipsec auto --help], [ignore], [ignore], [stderr])
+auto=auto
+if test -s stderr; then
+    auto=
 fi
 
 AT_CHECK([ipsec $auto --ctlsocket $ovs_base/node-1/pluto.ctl \
